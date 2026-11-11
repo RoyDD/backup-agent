@@ -1,0 +1,640 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { DatabaseSync } from 'node:sqlite'
+
+import type { AttemptId, MandateId, OutboxId, PlanId, TargetId, TicketId } from '../../domain/ids'
+import type { Plan } from '../../domain/plan'
+import type {
+  AttemptRecord,
+  AttemptStore,
+  LeaseRecord,
+  LeaseStore,
+  LineageEdgeRecord,
+  LineageNodeKind,
+  LineageStore,
+  MandateRecord,
+  MandateStore,
+  OutboxRecord,
+  OutboxStatus,
+  OutboxStore,
+  PlanRecord,
+  PlanStore,
+  Repository,
+  TicketRecord,
+  TicketStore,
+} from '../../ports/repository'
+import { newId } from '../../util/id'
+import { Mutex } from './mutex'
+
+interface TicketRow {
+  id: string
+  principal_id: string
+  target_id: string
+  goal: string
+  state: string
+  created_at: string
+  updated_at: string
+}
+
+interface MandateRow {
+  id: string
+  ticket_id: string
+  principal_id: string
+  scope: string
+  policy_version: string
+  allowed_risk: string
+  issued_at: string
+  expires_at: string
+}
+
+interface PlanRow {
+  id: string
+  ticket_id: string
+  mandate_id: string
+  state: string
+  payload_json: string
+  fingerprint_digest: string
+  created_at: string
+  updated_at: string
+}
+
+interface AttemptRow {
+  id: string
+  plan_id: string
+  state: string
+  owner: string
+  lease_token: number
+  lease_expires_at: string | null
+  started_at: string | null
+  finished_at: string | null
+  exit_code: number | null
+}
+
+interface OutboxRow {
+  id: string
+  topic: string
+  payload_json: string
+  idempotency_key: string
+  status: string
+  attempts: number
+  available_at: string
+  lease_expires_at: string | null
+  created_at: string
+  dispatched_at: string | null
+  last_error: string | null
+}
+
+interface LeaseRow {
+  target_id: string
+  owner: string
+  token: number
+  expires_at: string
+}
+
+interface LineageRow {
+  from_kind: string
+  from_id: string
+  to_kind: string
+  to_id: string
+  relation: string
+  created_at: string
+}
+
+function asOne<T>(value: unknown): T | undefined {
+  return value as T | undefined
+}
+
+function asMany<T>(value: unknown): T[] {
+  return value as T[]
+}
+
+function mapTicket(row: TicketRow): TicketRecord {
+  return {
+    id: row.id as TicketId,
+    principalId: row.principal_id,
+    targetId: row.target_id as TargetId,
+    goal: row.goal,
+    state: row.state as TicketRecord['state'],
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+function mapMandate(row: MandateRow): MandateRecord {
+  return {
+    id: row.id as MandateId,
+    ticketId: row.ticket_id as TicketId,
+    principalId: row.principal_id,
+    scope: row.scope,
+    policyVersion: row.policy_version,
+    allowedRisk: row.allowed_risk as MandateRecord['allowedRisk'],
+    issuedAt: row.issued_at,
+    expiresAt: row.expires_at,
+  }
+}
+
+function mapPlan(row: PlanRow): PlanRecord {
+  return {
+    id: row.id as PlanId,
+    ticketId: row.ticket_id as TicketId,
+    mandateId: row.mandate_id as MandateId,
+    state: row.state as PlanRecord['state'],
+    payload: JSON.parse(row.payload_json) as Plan,
+    fingerprintDigest: row.fingerprint_digest,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+function mapAttempt(row: AttemptRow): AttemptRecord {
+  return {
+    id: row.id as AttemptId,
+    planId: row.plan_id as PlanId,
+    state: row.state as AttemptRecord['state'],
+    owner: row.owner,
+    leaseToken: row.lease_token,
+    leaseExpiresAt: row.lease_expires_at,
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+    exitCode: row.exit_code,
+  }
+}
+
+function mapOutbox(row: OutboxRow): OutboxRecord {
+  return {
+    id: row.id as OutboxId,
+    topic: row.topic,
+    payload: JSON.parse(row.payload_json) as unknown,
+    idempotencyKey: row.idempotency_key,
+    status: row.status as OutboxStatus,
+    attempts: row.attempts,
+    availableAt: row.available_at,
+    leaseExpiresAt: row.lease_expires_at,
+    createdAt: row.created_at,
+    dispatchedAt: row.dispatched_at,
+  }
+}
+
+function mapLease(row: LeaseRow): LeaseRecord {
+  return {
+    targetId: row.target_id as TargetId,
+    owner: row.owner,
+    token: row.token,
+    expiresAt: row.expires_at,
+  }
+}
+
+function mapLineage(row: LineageRow): LineageEdgeRecord {
+  return {
+    fromKind: row.from_kind as LineageNodeKind,
+    fromId: row.from_id,
+    toKind: row.to_kind as LineageNodeKind,
+    toId: row.to_id,
+    relation: row.relation,
+    createdAt: row.created_at,
+  }
+}
+
+function withSavepoint<T>(db: DatabaseSync, name: string, fn: () => T): T {
+  db.exec(`SAVEPOINT ${name}`)
+  try {
+    const value = fn()
+    db.exec(`RELEASE ${name}`)
+    return value
+  } catch (error) {
+    db.exec(`ROLLBACK TO ${name}`)
+    db.exec(`RELEASE ${name}`)
+    throw error
+  }
+}
+
+function createStores(db: DatabaseSync): {
+  tickets: TicketStore
+  mandates: MandateStore
+  plans: PlanStore
+  attempts: AttemptStore
+  outbox: OutboxStore
+  leases: LeaseStore
+  lineage: LineageStore
+} {
+  const tickets: TicketStore = {
+    async insert(record) {
+      db.prepare(
+        `INSERT INTO tickets (id, principal_id, target_id, goal, state, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        record.id,
+        record.principalId,
+        record.targetId,
+        record.goal,
+        record.state,
+        record.createdAt,
+        record.updatedAt,
+      )
+    },
+    async get(id) {
+      const row = asOne<TicketRow>(db.prepare('SELECT * FROM tickets WHERE id = ?').get(id))
+      return row ? mapTicket(row) : null
+    },
+    async updateState(id, state, updatedAt) {
+      const result = db
+        .prepare('UPDATE tickets SET state = ?, updated_at = ? WHERE id = ?')
+        .run(state, updatedAt, id)
+      if (Number(result.changes) === 0) throw new Error(`ticket not found: ${id}`)
+    },
+    async listByState(state) {
+      return asMany<TicketRow>(
+        db.prepare('SELECT * FROM tickets WHERE state = ? ORDER BY created_at').all(state),
+      ).map(mapTicket)
+    },
+  }
+
+  const mandates: MandateStore = {
+    async insert(record) {
+      db.prepare(
+        `INSERT INTO mandates (id, ticket_id, principal_id, scope, policy_version, allowed_risk, issued_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        record.id,
+        record.ticketId,
+        record.principalId,
+        record.scope,
+        record.policyVersion,
+        record.allowedRisk,
+        record.issuedAt,
+        record.expiresAt,
+      )
+    },
+    async get(id) {
+      const row = asOne<MandateRow>(db.prepare('SELECT * FROM mandates WHERE id = ?').get(id))
+      return row ? mapMandate(row) : null
+    },
+    async listByTicket(ticketId) {
+      return asMany<MandateRow>(
+        db.prepare('SELECT * FROM mandates WHERE ticket_id = ? ORDER BY issued_at').all(ticketId),
+      ).map(mapMandate)
+    },
+  }
+
+  const plans: PlanStore = {
+    async insert(record) {
+      db.prepare(
+        `INSERT INTO plans (id, ticket_id, mandate_id, state, payload_json, fingerprint_digest, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        record.id,
+        record.ticketId,
+        record.mandateId,
+        record.state,
+        JSON.stringify(record.payload),
+        record.fingerprintDigest,
+        record.createdAt,
+        record.updatedAt,
+      )
+    },
+    async get(id) {
+      const row = asOne<PlanRow>(db.prepare('SELECT * FROM plans WHERE id = ?').get(id))
+      return row ? mapPlan(row) : null
+    },
+    async updateState(id, state, updatedAt) {
+      const result = db
+        .prepare('UPDATE plans SET state = ?, updated_at = ? WHERE id = ?')
+        .run(state, updatedAt, id)
+      if (Number(result.changes) === 0) throw new Error(`plan not found: ${id}`)
+    },
+    async listByTicket(ticketId) {
+      return asMany<PlanRow>(
+        db.prepare('SELECT * FROM plans WHERE ticket_id = ? ORDER BY created_at').all(ticketId),
+      ).map(mapPlan)
+    },
+  }
+
+  const attempts: AttemptStore = {
+    async insert(record) {
+      db.prepare(
+        `INSERT INTO attempts (id, plan_id, state, owner, lease_token, lease_expires_at, started_at, finished_at, exit_code)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        record.id,
+        record.planId,
+        record.state,
+        record.owner,
+        record.leaseToken,
+        record.leaseExpiresAt,
+        record.startedAt,
+        record.finishedAt,
+        record.exitCode,
+      )
+    },
+    async get(id) {
+      const row = asOne<AttemptRow>(db.prepare('SELECT * FROM attempts WHERE id = ?').get(id))
+      return row ? mapAttempt(row) : null
+    },
+    async updateState(id, state, patch) {
+      const row = asOne<AttemptRow>(db.prepare('SELECT * FROM attempts WHERE id = ?').get(id))
+      if (!row) throw new Error(`attempt not found: ${id}`)
+      const merged = { ...mapAttempt(row), ...patch, state }
+      db.prepare(
+        `UPDATE attempts
+            SET state = ?, owner = ?, lease_token = ?, lease_expires_at = ?, started_at = ?, finished_at = ?, exit_code = ?
+          WHERE id = ?`,
+      ).run(
+        merged.state,
+        merged.owner,
+        merged.leaseToken,
+        merged.leaseExpiresAt,
+        merged.startedAt,
+        merged.finishedAt,
+        merged.exitCode,
+        id,
+      )
+    },
+    async listRunning() {
+      return asMany<AttemptRow>(
+        db.prepare("SELECT * FROM attempts WHERE state = 'running' ORDER BY started_at").all(),
+      ).map(mapAttempt)
+    },
+    async listExpired(now) {
+      return asMany<AttemptRow>(
+        db
+          .prepare(
+            `SELECT * FROM attempts
+              WHERE state = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
+              ORDER BY lease_expires_at`,
+          )
+          .all(now),
+      ).map(mapAttempt)
+    },
+  }
+
+  const outbox: OutboxStore = {
+    async append(input) {
+      const id = newId('obx')
+      const now = new Date().toISOString()
+      const availableAt = input.availableAt ?? now
+      return withSavepoint(db, 'outbox_append', () => {
+        db.prepare(
+          `INSERT INTO outbox (id, topic, payload_json, idempotency_key, status, attempts, available_at, lease_expires_at, created_at, dispatched_at, last_error)
+           VALUES (?, ?, ?, ?, 'pending', 0, ?, NULL, ?, NULL, NULL)
+           ON CONFLICT(idempotency_key) DO NOTHING`,
+        ).run(id, input.topic, JSON.stringify(input.payload), input.idempotencyKey, availableAt, now)
+        const row = asOne<OutboxRow>(
+          db.prepare('SELECT * FROM outbox WHERE idempotency_key = ?').get(input.idempotencyKey),
+        )
+        if (!row) throw new Error('outbox append failed')
+        return mapOutbox(row)
+      })
+    },
+    async claim(input) {
+      return withSavepoint(db, 'outbox_claim', () => {
+        const rows = asMany<OutboxRow>(
+          db
+            .prepare(
+              `SELECT * FROM outbox
+                WHERE (status = 'pending' AND available_at <= ?)
+                   OR (status = 'processing' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?)
+                ORDER BY available_at
+                LIMIT ?`,
+            )
+            .all(input.now, input.now, input.limit),
+        )
+        if (rows.length === 0) return []
+        const leaseUntil = new Date(Date.parse(input.now) + input.leaseMs).toISOString()
+        for (const row of rows) {
+          db.prepare(
+            `UPDATE outbox
+                SET status = 'processing', lease_expires_at = ?, attempts = attempts + 1
+              WHERE id = ?`,
+          ).run(leaseUntil, row.id)
+        }
+        return rows.map((row) =>
+          mapOutbox({
+            ...row,
+            status: 'processing',
+            lease_expires_at: leaseUntil,
+            attempts: row.attempts + 1,
+          }),
+        )
+      })
+    },
+    async markDispatched(id, now) {
+      const result = db
+        .prepare(
+          `UPDATE outbox SET status = 'dispatched', dispatched_at = ?, lease_expires_at = NULL, last_error = NULL WHERE id = ?`,
+        )
+        .run(now, id)
+      if (Number(result.changes) === 0) throw new Error(`outbox record not found: ${id}`)
+    },
+    async markFailed(id, error, retryAt) {
+      const result = db
+        .prepare(
+          `UPDATE outbox SET status = 'pending', available_at = ?, lease_expires_at = NULL, last_error = ? WHERE id = ?`,
+        )
+        .run(retryAt, error, id)
+      if (Number(result.changes) === 0) throw new Error(`outbox record not found: ${id}`)
+    },
+    async countByStatus(status) {
+      const row = asOne<{ count: number }>(
+        db.prepare('SELECT COUNT(*) AS count FROM outbox WHERE status = ?').get(status),
+      )
+      return row?.count ?? 0
+    },
+    async countExpiredProcessing(now) {
+      const row = asOne<{ count: number }>(
+        db
+          .prepare(
+            `SELECT COUNT(*) AS count FROM outbox
+              WHERE status = 'processing' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?`,
+          )
+          .get(now),
+      )
+      return row?.count ?? 0
+    },
+  }
+
+  const leases: LeaseStore = {
+    async acquire(input) {
+      return withSavepoint(db, 'lease_acquire', () => {
+        const existing = asOne<LeaseRow>(
+          db.prepare('SELECT * FROM leases WHERE target_id = ?').get(input.targetId),
+        )
+        if (existing) {
+          if (existing.owner === input.owner && existing.expires_at > input.now) {
+            return mapLease(existing)
+          }
+          if (existing.owner !== input.owner && existing.expires_at > input.now) {
+            return null
+          }
+        }
+
+        const fence = asOne<{ counter: number }>(
+          db.prepare('SELECT counter FROM lease_fences WHERE target_id = ?').get(input.targetId),
+        )
+        const token = (fence?.counter ?? 0) + 1
+        const expiresAt = new Date(Date.parse(input.now) + input.ttlMs).toISOString()
+
+        db.prepare(
+          `INSERT INTO lease_fences (target_id, counter) VALUES (?, ?)
+           ON CONFLICT(target_id) DO UPDATE SET counter = excluded.counter`,
+        ).run(input.targetId, token)
+        db.prepare(
+          `INSERT INTO leases (target_id, owner, token, expires_at) VALUES (?, ?, ?, ?)
+           ON CONFLICT(target_id) DO UPDATE SET owner = excluded.owner, token = excluded.token, expires_at = excluded.expires_at`,
+        ).run(input.targetId, input.owner, token, expiresAt)
+
+        return {
+          targetId: input.targetId,
+          owner: input.owner,
+          token,
+          expiresAt,
+        }
+      })
+    },
+    async renew(input) {
+      const expiresAt = new Date(Date.parse(input.now) + input.ttlMs).toISOString()
+      const result = db
+        .prepare(
+          'UPDATE leases SET expires_at = ? WHERE target_id = ? AND owner = ? AND token = ?',
+        )
+        .run(expiresAt, input.targetId, input.owner, input.token)
+      return Number(result.changes) > 0
+    },
+    async release(input) {
+      db.prepare('DELETE FROM leases WHERE target_id = ? AND owner = ? AND token = ?').run(
+        input.targetId,
+        input.owner,
+        input.token,
+      )
+    },
+    async get(targetId) {
+      const row = asOne<LeaseRow>(db.prepare('SELECT * FROM leases WHERE target_id = ?').get(targetId))
+      return row ? mapLease(row) : null
+    },
+    async currentFence(targetId) {
+      const row = asOne<{ counter: number }>(
+        db.prepare('SELECT counter FROM lease_fences WHERE target_id = ?').get(targetId),
+      )
+      return row?.counter ?? 0
+    },
+  }
+
+  const lineage: LineageStore = {
+    async append(edge) {
+      db.prepare(
+        `INSERT INTO lineage_edges (from_kind, from_id, to_kind, to_id, relation, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(edge.fromKind, edge.fromId, edge.toKind, edge.toId, edge.relation, edge.createdAt)
+    },
+    async listFor(nodeKind, nodeId) {
+      return asMany<LineageRow>(
+        db
+          .prepare(
+            `SELECT * FROM lineage_edges
+              WHERE (from_kind = ? AND from_id = ?) OR (to_kind = ? AND to_id = ?)
+              ORDER BY created_at`,
+          )
+          .all(nodeKind, nodeId, nodeKind, nodeId),
+      ).map(mapLineage)
+    },
+  }
+
+  return { tickets, mandates, plans, attempts, outbox, leases, lineage }
+}
+
+function lockStore<T extends object>(store: T, mutex: Mutex): T {
+  return new Proxy(store, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver) as unknown
+      if (typeof value !== 'function') return value
+      return (...args: unknown[]) =>
+        mutex.run(async () => (value as (...inner: unknown[]) => unknown).apply(target, args))
+    },
+  }) as T
+}
+
+const MIGRATIONS: readonly { name: string; file: URL }[] = [
+  { name: '001_init.sql', file: new URL('./migrations/001_init.sql', import.meta.url) },
+]
+
+function runMigrations(db: DatabaseSync): void {
+  db.exec(
+    'CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)',
+  )
+  for (const migration of MIGRATIONS) {
+    const applied = db.prepare('SELECT 1 FROM schema_migrations WHERE name = ?').get(migration.name)
+    if (applied) continue
+    const sql = readFileSync(fileURLToPath(migration.file), 'utf8')
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      db.exec(sql)
+      db.prepare('INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)').run(
+        migration.name,
+        new Date().toISOString(),
+      )
+      db.exec('COMMIT')
+    } catch (error) {
+      db.exec('ROLLBACK')
+      throw error
+    }
+  }
+}
+
+export interface SqliteRepositoryOptions {
+  filename: string
+}
+
+/**
+ * Opens the control-plane database. The returned Repository serializes every
+ * operation on its single connection; `transaction()` hands the caller a
+ * connection-bound view so statements inside a transaction are not re-queued.
+ */
+export async function createSqliteRepository(
+  options: SqliteRepositoryOptions,
+): Promise<Repository> {
+  const db = new DatabaseSync(options.filename)
+  db.exec('PRAGMA foreign_keys = ON')
+  db.exec('PRAGMA busy_timeout = 5000')
+  if (options.filename !== ':memory:') db.exec('PRAGMA journal_mode = WAL')
+
+  const mutex = new Mutex()
+  const stores = createStores(db)
+
+  const unlocked: Repository = {
+    migrate: async () => {
+      runMigrations(db)
+    },
+    transaction: async (fn) => fn(unlocked),
+    ...stores,
+    close: async () => {
+      db.close()
+    },
+  }
+
+  return {
+    migrate: () => mutex.run(() => runMigrations(db)),
+    transaction: (fn) =>
+      mutex.run(async () => {
+        db.exec('BEGIN IMMEDIATE')
+        try {
+          const value = await fn(unlocked)
+          db.exec('COMMIT')
+          return value
+        } catch (error) {
+          try {
+            db.exec('ROLLBACK')
+          } catch {
+            // A failed ROLLBACK must not mask the original error.
+          }
+          throw error
+        }
+      }),
+    tickets: lockStore(stores.tickets, mutex),
+    mandates: lockStore(stores.mandates, mutex),
+    plans: lockStore(stores.plans, mutex),
+    attempts: lockStore(stores.attempts, mutex),
+    outbox: lockStore(stores.outbox, mutex),
+    leases: lockStore(stores.leases, mutex),
+    lineage: lockStore(stores.lineage, mutex),
+    close: () => mutex.run(() => db.close()),
+  }
+}
