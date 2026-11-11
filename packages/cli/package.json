@@ -7,7 +7,8 @@
     "bkagent": "./src/main.ts"
   },
   "dependencies": {
-    "@backup-agent/core": "workspace:*"
+    "@backup-agent/core": "workspace:*",
+    "@backup-agent/engine-postgres": "workspace:*"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p ."
