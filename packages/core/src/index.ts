@@ -18,6 +18,7 @@ export * from './ports/engine'
 export * from './ports/repository'
 
 export * from './plan/index'
+export * from './security/principal-registry'
 export * from './executor/index'
 export * from './runner/index'
 export * from './ops/index'

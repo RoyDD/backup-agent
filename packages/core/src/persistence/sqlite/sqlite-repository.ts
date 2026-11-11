@@ -3,12 +3,16 @@ import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 
 import type { ArtifactId, AttemptId, MandateId, OutboxId, PlanId, TargetId, TicketId } from '../../domain/ids'
+import type { AssetDescriptor } from '../../domain/asset'
 import type { Plan } from '../../domain/plan'
 import type {
   ArtifactFilter,
   ArtifactRecord,
   ArtifactStore,
+  AssetStore,
   AttemptRecord,
+  ModelUsageRecord,
+  ModelUsageStore,
   AttemptStore,
   LeaseRecord,
   LeaseStore,
@@ -93,6 +97,31 @@ interface LeaseRow {
   owner: string
   token: number
   expires_at: string
+}
+
+interface ModelUsageRow {
+  id: string
+  ticket_id: string | null
+  task: string
+  model: string
+  input_tokens: number
+  output_tokens: number
+  cost_usd: number
+  created_at: string
+}
+
+interface AssetRow {
+  target_id: string
+  engine: string
+  environment: string
+  owner: string
+  criticality: string
+  data_classification: string
+  rpo_minutes: number
+  rto_minutes: number
+  maintenance_window_json: string | null
+  protected: number
+  updated_at: string
 }
 
 interface ArtifactRow {
@@ -196,6 +225,36 @@ function mapOutbox(row: OutboxRow): OutboxRecord {
   }
 }
 
+function mapModelUsage(row: ModelUsageRow): ModelUsageRecord {
+  return {
+    id: row.id,
+    ticketId: row.ticket_id === null ? null : (row.ticket_id as TicketId),
+    task: row.task,
+    model: row.model,
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    costUsd: row.cost_usd,
+    createdAt: row.created_at,
+  }
+}
+
+function mapAsset(row: AssetRow): AssetDescriptor {
+  return {
+    targetId: row.target_id as TargetId,
+    engine: row.engine,
+    environment: row.environment as AssetDescriptor['environment'],
+    owner: row.owner,
+    criticality: row.criticality as AssetDescriptor['criticality'],
+    dataClassification: row.data_classification as AssetDescriptor['dataClassification'],
+    rpoMinutes: row.rpo_minutes,
+    rtoMinutes: row.rto_minutes,
+    ...(row.maintenance_window_json === null
+      ? {}
+      : { maintenanceWindow: JSON.parse(row.maintenance_window_json) }),
+    protected: row.protected === 1,
+  }
+}
+
 function mapArtifact(row: ArtifactRow): ArtifactRecord {
   return {
     id: row.id as ArtifactId,
@@ -253,6 +312,8 @@ function createStores(db: DatabaseSync): {
   plans: PlanStore
   attempts: AttemptStore
   artifacts: ArtifactStore
+  assets: AssetStore
+  modelUsage: ModelUsageStore
   outbox: OutboxStore
   leases: LeaseStore
   lineage: LineageStore
@@ -418,6 +479,68 @@ function createStores(db: DatabaseSync): {
           )
           .all(since, since),
       ).map(mapAttempt)
+    },
+  }
+
+  const assets: AssetStore = {
+    async upsert(asset) {
+      db.prepare(
+        `INSERT INTO assets (target_id, engine, environment, owner, criticality, data_classification,
+                             rpo_minutes, rto_minutes, maintenance_window_json, protected, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(target_id) DO UPDATE SET
+           engine = excluded.engine, environment = excluded.environment, owner = excluded.owner,
+           criticality = excluded.criticality, data_classification = excluded.data_classification,
+           rpo_minutes = excluded.rpo_minutes, rto_minutes = excluded.rto_minutes,
+           maintenance_window_json = excluded.maintenance_window_json,
+           protected = excluded.protected, updated_at = excluded.updated_at`,
+      ).run(
+        asset.targetId,
+        asset.engine,
+        asset.environment,
+        asset.owner,
+        asset.criticality,
+        asset.dataClassification,
+        asset.rpoMinutes,
+        asset.rtoMinutes,
+        asset.maintenanceWindow === undefined ? null : JSON.stringify(asset.maintenanceWindow),
+        asset.protected ? 1 : 0,
+        new Date().toISOString(),
+      )
+    },
+    async get(targetId) {
+      const row = asOne<AssetRow>(db.prepare('SELECT * FROM assets WHERE target_id = ?').get(targetId))
+      return row ? mapAsset(row) : null
+    },
+    async list() {
+      return asMany<AssetRow>(db.prepare('SELECT * FROM assets ORDER BY target_id').all()).map(
+        mapAsset,
+      )
+    },
+  }
+
+  const modelUsage: ModelUsageStore = {
+    async insert(record) {
+      db.prepare(
+        `INSERT INTO model_usage (id, ticket_id, task, model, input_tokens, output_tokens, cost_usd, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        record.id,
+        record.ticketId,
+        record.task,
+        record.model,
+        record.inputTokens,
+        record.outputTokens,
+        record.costUsd,
+        record.createdAt,
+      )
+    },
+    async listSince(since) {
+      return asMany<ModelUsageRow>(
+        db
+          .prepare('SELECT * FROM model_usage WHERE created_at >= ? ORDER BY created_at')
+          .all(since),
+      ).map(mapModelUsage)
     },
   }
 
@@ -645,7 +768,7 @@ function createStores(db: DatabaseSync): {
     },
   }
 
-  return { tickets, mandates, plans, attempts, artifacts, outbox, leases, lineage }
+  return { tickets, mandates, plans, attempts, artifacts, assets, modelUsage, outbox, leases, lineage }
 }
 
 function lockStore<T extends object>(store: T, mutex: Mutex): T {
@@ -663,6 +786,8 @@ const MIGRATIONS: readonly { name: string; file: URL }[] = [
   { name: '001_init.sql', file: new URL('./migrations/001_init.sql', import.meta.url) },
   { name: '002_artifacts.sql', file: new URL('./migrations/002_artifacts.sql', import.meta.url) },
   { name: '003_attempt_error.sql', file: new URL('./migrations/003_attempt_error.sql', import.meta.url) },
+  { name: '004_assets.sql', file: new URL('./migrations/004_assets.sql', import.meta.url) },
+  { name: '005_model_usage.sql', file: new URL('./migrations/005_model_usage.sql', import.meta.url) },
 ]
 
 function runMigrations(db: DatabaseSync): void {
@@ -742,6 +867,8 @@ export async function createSqliteRepository(
     plans: lockStore(stores.plans, mutex),
     attempts: lockStore(stores.attempts, mutex),
     artifacts: lockStore(stores.artifacts, mutex),
+    assets: lockStore(stores.assets, mutex),
+    modelUsage: lockStore(stores.modelUsage, mutex),
     outbox: lockStore(stores.outbox, mutex),
     leases: lockStore(stores.leases, mutex),
     lineage: lockStore(stores.lineage, mutex),

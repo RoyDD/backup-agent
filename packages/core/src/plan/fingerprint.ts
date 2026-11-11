@@ -50,7 +50,9 @@ export function matchFingerprint(
   current: PlanFingerprint,
   now: string,
 ): FingerprintMatch {
-  if (Date.parse(current.expiresAt) <= Date.parse(now)) {
+  const planExpired = Date.parse(plan.fingerprint.expiresAt) <= Date.parse(now)
+  const currentExpired = Date.parse(current.expiresAt) <= Date.parse(now)
+  if (planExpired || currentExpired) {
     return { ok: false, reason: 'expired', changed: ['expiresAt'] }
   }
 

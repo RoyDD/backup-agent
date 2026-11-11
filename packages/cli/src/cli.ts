@@ -7,6 +7,7 @@ import { parseArgs } from 'node:util'
 import {
   ConnectionError,
   LocalExecutor,
+  PrincipalError,
   WebhookNotifier,
   asArtifactId,
   asAttemptId,
@@ -15,14 +16,23 @@ import {
   asTargetId,
   asTicketId,
   buildOpsReport,
+  checkBudget,
   connectionEnv,
+  estimateCost,
+  evaluateAssetRpo,
   fingerprintPlan,
   forecastCapacity,
   newId,
+  loadPrincipalRegistry,
+  parseModelPolicy,
   planRetention,
+  policyFor,
+  preparePlan,
   renderDashboard,
   renderMetrics,
   renderReportMarkdown,
+  resolvePrincipalDsn,
+  validateAsset,
   requiresApproval,
   runPlan,
   validatePlan,
@@ -56,7 +66,7 @@ import {
 } from '@backup-agent/engine-postgres'
 
 import { createSqliteRepository, reconcile } from '@backup-agent/core/persistence'
-import type { Repository } from '@backup-agent/core'
+import type { AssetDescriptor, Repository } from '@backup-agent/core'
 
 import { inspectInstance, parseDsn } from './inspect'
 
@@ -93,6 +103,16 @@ Usage:
   bkagent trace    --db <path> (--ticket <id> | --plan <id>)
   bkagent notify-test --url <url> [--severity P1|P2|P3|P4] [--title <text>]
   bkagent dashboard --db <path> (--out <file> | --serve [--port N]) [--since <iso|Nd>]
+  bkagent asset-set --db <path> --target <id> --engine <e> --environment <env> --owner <o>
+                    --criticality <c> --data-classification <d> --rpo-minutes N --rto-minutes N
+                    [--protected] [--maintenance-cron <cron>] [--maintenance-tz <tz>]
+  bkagent asset-list --db <path> [--format json|text]
+  bkagent asset-rpo  --db <path>
+  bkagent model-policy show --file <path>
+  bkagent model-policy check --file <path> --task <t> --input-tokens N --output-tokens N
+  bkagent cost record --db <path> --task <t> --model <m> --input-tokens N --output-tokens N
+                      [--ticket <id>] [--policy <file>]
+  bkagent cost report --db <path> [--since <iso|Nd>]
 
 Environment:
   BKAGENT_DSN    Default DSN when --dsn is omitted
@@ -240,6 +260,23 @@ function pathSize(path: string): number {
     total += entry.isDirectory() ? pathSize(child) : statSync(child).size
   }
   return total
+}
+
+function resolveTarget(
+  values: { dsn?: string; credentials?: string; principal?: string },
+  env: NodeJS.ProcessEnv,
+): { dsn: string; principalId: string } {
+  const principalId = principalFor(values.principal, env)
+  const credentialsPath = values.credentials ?? env.BKAGENT_CREDENTIALS
+  if (credentialsPath !== undefined && credentialsPath.trim() !== '') {
+    const registry = loadPrincipalRegistry(credentialsPath)
+    return { dsn: resolvePrincipalDsn(registry, principalId, env), principalId }
+  }
+  const dsn = values.dsn ?? env.BKAGENT_DSN
+  if (dsn === undefined || dsn.trim() === '') {
+    throw new Error('--dsn or --credentials is required')
+  }
+  return { dsn, principalId }
 }
 
 function parseNonNegativeInt(value: string | undefined, name: string): number {
@@ -436,13 +473,23 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
             table: { type: 'string', multiple: true, default: [] },
             schema: { type: 'string', multiple: true, default: [] },
             principal: { type: 'string' },
+            credentials: { type: 'string' },
             'state-dir': { type: 'string' },
             db: { type: 'string' },
           },
         })
-        const dsn = values.dsn ?? env.BKAGENT_DSN
-        if (dsn === undefined || values.out === undefined) {
-          writeError('bkagent: backup requires --dsn and --out\n')
+        if (values.out === undefined) {
+          writeError('bkagent: backup requires --out\n')
+          return 2
+        }
+        let dsn: string
+        let principal: string
+        try {
+          const target = resolveTarget(values, env)
+          dsn = target.dsn
+          principal = target.principalId
+        } catch (error) {
+          writeError(`bkagent: ${(error as Error).message}\n`)
           return 2
         }
         const mode = values.mode ?? 'logical'
@@ -452,7 +499,6 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
         }
         const connection = parseDsn(dsn)
         const instance = await postgresEngine.probe(executor, connection)
-        const principal = principalFor(values.principal, env)
 
         if (mode === 'physical') {
           const format = (values.format ?? 'plain') as 'plain' | 'tar'
@@ -546,12 +592,29 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
           return 2
         }
         const ctx = planContext(instance, requestDigest(request))
-        const plan = postgresEngine.planLogicalBackup(request, ctx)
-        const issues = validate(plan, principal)
-        if (issues.length > 0) {
-          write(`${issueText(issues)}\n`)
+        const built = postgresEngine.planLogicalBackup(request, ctx)
+        const prepared = await preparePlan({
+          plan: built,
+          refresh: async () => {
+            const live = await postgresEngine.probe(executor, connection)
+            const now = new Date().toISOString()
+            return {
+              ...built.fingerprint,
+              systemIdentifier: live.systemIdentifier ?? built.fingerprint.systemIdentifier,
+              targetOid: live.databaseOid ?? built.fingerprint.targetOid,
+              createdAt: now,
+              expiresAt: new Date(Date.parse(now) + 3_600_000).toISOString(),
+            }
+          },
+          validate: (candidate) => validate(candidate, principal),
+          now: () => new Date().toISOString(),
+          maxAttempts: 2,
+        })
+        if (!prepared.ok) {
+          write(`${issueText(prepared.issues)}\n`)
           return 4
         }
+        const plan = prepared.plan
         const result = await applyPlan(
           plan,
           instance,
@@ -594,13 +657,23 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
             jobs: { type: 'string' },
             yes: { type: 'boolean', default: false },
             principal: { type: 'string' },
+            credentials: { type: 'string' },
             'state-dir': { type: 'string' },
             db: { type: 'string' },
           },
         })
-        const dsn = values.dsn ?? env.BKAGENT_DSN
-        if (dsn === undefined || values.input === undefined) {
-          writeError('bkagent: restore requires --dsn and --input\n')
+        if (values.input === undefined) {
+          writeError('bkagent: restore requires --input\n')
+          return 2
+        }
+        let dsn: string
+        let principal: string
+        try {
+          const target = resolveTarget(values, env)
+          dsn = target.dsn
+          principal = target.principalId
+        } catch (error) {
+          writeError(`bkagent: ${(error as Error).message}\n`)
           return 2
         }
         const format = (values.format ?? inferFormat(values.input)) as LogicalFormat
@@ -628,16 +701,33 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
         }
         const instance = await postgresEngine.probe(executor, connection)
         const ctx = planContext(instance, requestDigest(request))
-        const plan = postgresEngine.planLogicalRestore(request, ctx)
-        if (requiresApproval(plan.risk) && !values.yes) {
-          writeError(`bkagent: plan risk is ${plan.risk}; re-run with --yes to proceed\n`)
+        const built = postgresEngine.planLogicalRestore(request, ctx)
+        if (requiresApproval(built.risk) && !values.yes) {
+          writeError(`bkagent: plan risk is ${built.risk}; re-run with --yes to proceed\n`)
           return 2
         }
-        const issues = validate(plan, principalFor(values.principal, env))
-        if (issues.length > 0) {
-          write(`${issueText(issues)}\n`)
+        const prepared = await preparePlan({
+          plan: built,
+          refresh: async () => {
+            const live = await postgresEngine.probe(executor, connection)
+            const now = new Date().toISOString()
+            return {
+              ...built.fingerprint,
+              systemIdentifier: live.systemIdentifier ?? built.fingerprint.systemIdentifier,
+              targetOid: live.databaseOid ?? built.fingerprint.targetOid,
+              createdAt: now,
+              expiresAt: new Date(Date.parse(now) + 3_600_000).toISOString(),
+            }
+          },
+          validate: (candidate) => validate(candidate, principal),
+          now: () => new Date().toISOString(),
+          maxAttempts: 2,
+        })
+        if (!prepared.ok) {
+          write(`${issueText(prepared.issues)}\n`)
           return 4
         }
+        const plan = prepared.plan
         const result = await applyPlan(
           plan,
           instance,
@@ -649,7 +739,7 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
         if (values.db !== undefined) {
           await persistRun(resolveDb(values.db), {
             plan,
-            principalId: principalFor(values.principal, env),
+            principalId: principal,
             result,
           })
         }
@@ -1496,6 +1586,250 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
         }).listen(port, '127.0.0.1', () => {
           writeError(`dashboard listening on http://127.0.0.1:${port}\n`)
         })
+        return 0
+      }
+
+      case 'asset-set': {
+        const { values } = parseArgs({
+          args: [...rest],
+          allowPositionals: false,
+          options: {
+            db: { type: 'string' },
+            target: { type: 'string' },
+            engine: { type: 'string' },
+            environment: { type: 'string' },
+            owner: { type: 'string' },
+            criticality: { type: 'string' },
+            'data-classification': { type: 'string' },
+            'rpo-minutes': { type: 'string' },
+            'rto-minutes': { type: 'string' },
+            protected: { type: 'boolean', default: false },
+            'maintenance-cron': { type: 'string' },
+            'maintenance-tz': { type: 'string' },
+          },
+        })
+        if (
+          values.target === undefined ||
+          values.engine === undefined ||
+          values.environment === undefined ||
+          values.owner === undefined ||
+          values.criticality === undefined ||
+          values['data-classification'] === undefined ||
+          values['rpo-minutes'] === undefined ||
+          values['rto-minutes'] === undefined
+        ) {
+          writeError('bkagent: asset-set requires target, engine, environment, owner, criticality, data-classification, rpo-minutes, rto-minutes\n')
+          return 2
+        }
+        const asset: AssetDescriptor = {
+          targetId: asTargetId(values.target),
+          engine: values.engine,
+          environment: values.environment as AssetDescriptor['environment'],
+          owner: values.owner,
+          criticality: values.criticality as AssetDescriptor['criticality'],
+          dataClassification: values['data-classification'] as AssetDescriptor['dataClassification'],
+          rpoMinutes: Number(values['rpo-minutes']),
+          rtoMinutes: Number(values['rto-minutes']),
+          ...(values['maintenance-cron'] === undefined && values['maintenance-tz'] === undefined
+            ? {}
+            : {
+                maintenanceWindow: {
+                  ...(values['maintenance-cron'] === undefined
+                    ? {}
+                    : { cron: values['maintenance-cron'] }),
+                  ...(values['maintenance-tz'] === undefined
+                    ? {}
+                    : { timezone: values['maintenance-tz'] }),
+                },
+              }),
+          protected: values.protected,
+        }
+        const issues = validateAsset(asset)
+        if (issues.length > 0) {
+          write(`${JSON.stringify({ ok: false, issues }, null, 2)}\n`)
+          return 4
+        }
+        await withRepo(resolveDb(values.db), async (repo) => repo.assets.upsert(asset))
+        write(`${JSON.stringify(asset, null, 2)}\n`)
+        return 0
+      }
+
+      case 'asset-list': {
+        const { values } = parseArgs({
+          args: [...rest],
+          allowPositionals: false,
+          options: { db: { type: 'string' }, format: { type: 'string', default: 'json' } },
+        })
+        const assets = await withRepo(resolveDb(values.db), async (repo) => repo.assets.list())
+        if (values.format === 'text') {
+          write(
+            `${assets
+              .map(
+                (asset) =>
+                  `${asset.targetId} ${asset.environment}/${asset.criticality} owner=${asset.owner} rpo=${asset.rpoMinutes}m rto=${asset.rtoMinutes}m protected=${asset.protected}`,
+              )
+              .join('\n')}\n`,
+          )
+        } else {
+          write(`${JSON.stringify(assets, null, 2)}\n`)
+        }
+        return 0
+      }
+
+      case 'asset-rpo': {
+        const { values } = parseArgs({
+          args: [...rest],
+          allowPositionals: false,
+          options: { db: { type: 'string' } },
+        })
+        const status = await withRepo(resolveDb(values.db), async (repo) => {
+          const assets = await repo.assets.list()
+          const artifacts = await repo.artifacts.list({})
+          return evaluateAssetRpo(assets, artifacts, new Date())
+        })
+        write(`${JSON.stringify(status, null, 2)}\n`)
+        return 0
+      }
+
+      case 'model-policy': {
+        const [subcommand, ...policyArgs] = rest
+        if (subcommand !== 'show' && subcommand !== 'check') {
+          writeError('bkagent: model-policy requires show|check\n')
+          return 2
+        }
+        const { values } = parseArgs({
+          args: policyArgs,
+          allowPositionals: false,
+          options: {
+            file: { type: 'string' },
+            task: { type: 'string' },
+            'input-tokens': { type: 'string' },
+            'output-tokens': { type: 'string' },
+          },
+        })
+        if (values.file === undefined) {
+          writeError('bkagent: model-policy requires --file\n')
+          return 2
+        }
+        const document = parseModelPolicy(JSON.parse(readFileSync(values.file, 'utf8')) as unknown)
+        if (subcommand === 'show') {
+          write(`${JSON.stringify(document, null, 2)}\n`)
+          return 0
+        }
+        if (
+          values.task === undefined ||
+          values['input-tokens'] === undefined ||
+          values['output-tokens'] === undefined
+        ) {
+          writeError('bkagent: model-policy check requires --task --input-tokens --output-tokens\n')
+          return 2
+        }
+        const policy = policyFor(document, values.task)
+        if (policy === undefined) {
+          writeError(`bkagent: no policy for task "${values.task}"\n`)
+          return 2
+        }
+        const usage = {
+          task: values.task,
+          model: policy.model,
+          inputTokens: parseNonNegativeInt(values['input-tokens'], '--input-tokens'),
+          outputTokens: parseNonNegativeInt(values['output-tokens'], '--output-tokens'),
+        }
+        write(`${JSON.stringify({ policy, usage, check: checkBudget(usage, policy) }, null, 2)}\n`)
+        return 0
+      }
+
+      case 'cost': {
+        const [subcommand, ...costArgs] = rest
+        if (subcommand !== 'record' && subcommand !== 'report') {
+          writeError('bkagent: cost requires record|report\n')
+          return 2
+        }
+        if (subcommand === 'record') {
+          const { values } = parseArgs({
+            args: costArgs,
+            allowPositionals: false,
+            options: {
+              db: { type: 'string' },
+              ticket: { type: 'string' },
+              task: { type: 'string' },
+              model: { type: 'string' },
+              'input-tokens': { type: 'string' },
+              'output-tokens': { type: 'string' },
+              'input-per-1k': { type: 'string' },
+              'output-per-1k': { type: 'string' },
+              policy: { type: 'string' },
+            },
+          })
+          if (
+            values.task === undefined ||
+            values.model === undefined ||
+            values['input-tokens'] === undefined ||
+            values['output-tokens'] === undefined
+          ) {
+            writeError('bkagent: cost record requires --task --model --input-tokens --output-tokens\n')
+            return 2
+          }
+          let inputPer1k = values['input-per-1k'] === undefined ? 0 : Number(values['input-per-1k'])
+          let outputPer1k = values['output-per-1k'] === undefined ? 0 : Number(values['output-per-1k'])
+          if (values.policy !== undefined) {
+            const document = parseModelPolicy(
+              JSON.parse(readFileSync(values.policy, 'utf8')) as unknown,
+            )
+            const policy = policyFor(document, values.task)
+            if (policy === undefined) {
+              writeError(`bkagent: no policy for task "${values.task}"\n`)
+              return 2
+            }
+            inputPer1k = policy.inputPer1k
+            outputPer1k = policy.outputPer1k
+          }
+          const usage = {
+            task: values.task,
+            model: values.model,
+            inputTokens: parseNonNegativeInt(values['input-tokens'], '--input-tokens'),
+            outputTokens: parseNonNegativeInt(values['output-tokens'], '--output-tokens'),
+          }
+          const costUsd = estimateCost(usage, { inputPer1k, outputPer1k })
+          const record = {
+            id: newId('mu'),
+            ticketId: values.ticket === undefined ? null : asTicketId(values.ticket),
+            ...usage,
+            costUsd,
+            createdAt: new Date().toISOString(),
+          }
+          await withRepo(resolveDb(values.db), async (repo) => repo.modelUsage.insert(record))
+          write(`${JSON.stringify(record, null, 2)}\n`)
+          return 0
+        }
+
+        const { values } = parseArgs({
+          args: costArgs,
+          allowPositionals: false,
+          options: { db: { type: 'string' }, since: { type: 'string' } },
+        })
+        const since = parseSince(values.since, 30)
+        const usage = await withRepo(resolveDb(values.db), async (repo) =>
+          repo.modelUsage.listSince(since),
+        )
+        const byTask = new Map<string, { task: string; model: string; calls: number; tokens: number; costUsd: number }>()
+        for (const record of usage) {
+          const key = `${record.task}/${record.model}`
+          const entry = byTask.get(key) ?? {
+            task: record.task,
+            model: record.model,
+            calls: 0,
+            tokens: 0,
+            costUsd: 0,
+          }
+          entry.calls += 1
+          entry.tokens += record.inputTokens + record.outputTokens
+          entry.costUsd += record.costUsd
+          byTask.set(key, entry)
+        }
+        write(
+          `${JSON.stringify({ since, calls: usage.length, costUsd: usage.reduce((sum, record) => sum + record.costUsd, 0), byTask: [...byTask.values()] }, null, 2)}\n`,
+        )
         return 0
       }
 

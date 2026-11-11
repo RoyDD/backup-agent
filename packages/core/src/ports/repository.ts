@@ -1,4 +1,5 @@
 import type { ArtifactId, AttemptId, MandateId, OutboxId, PlanId, TargetId, TicketId } from '../domain/ids'
+import type { AssetDescriptor } from '../domain/asset'
 import type { Plan } from '../domain/plan'
 import type { RiskLevel } from '../domain/risk'
 import type { AttemptState, PlanState, TicketState } from '../domain/state'
@@ -142,6 +143,28 @@ export interface ArtifactStore {
   remove(ids: readonly ArtifactId[]): Promise<void>
 }
 
+export interface AssetStore {
+  upsert(asset: AssetDescriptor): Promise<void>
+  get(targetId: TargetId): Promise<AssetDescriptor | null>
+  list(): Promise<AssetDescriptor[]>
+}
+
+export interface ModelUsageRecord {
+  id: string
+  ticketId: TicketId | null
+  task: string
+  model: string
+  inputTokens: number
+  outputTokens: number
+  costUsd: number
+  createdAt: string
+}
+
+export interface ModelUsageStore {
+  insert(record: ModelUsageRecord): Promise<void>
+  listSince(since: string): Promise<ModelUsageRecord[]>
+}
+
 export interface OutboxAppendInput {
   topic: string
   payload: unknown
@@ -183,6 +206,8 @@ export interface Repository {
   plans: PlanStore
   attempts: AttemptStore
   artifacts: ArtifactStore
+  assets: AssetStore
+  modelUsage: ModelUsageStore
   outbox: OutboxStore
   leases: LeaseStore
   lineage: LineageStore
