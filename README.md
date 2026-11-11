@@ -15,7 +15,9 @@ P0 骨架、P0.5 故障模式目录、P1 逻辑备份与恢复均已完成：
 
 - P5：dsh 工具插件（`pg_inspect` / `pg_backup` / `pg_restore` / `pg_verify` / `pg_catalog` / `pg_report`）、`pg-dba` Preset 与六项技能、安装脚本；见 `docs/dsh-integration.md`。
 
-P6（Web UI 面板）尚未开始。
+- P6：只读 Web 面板（`bkagent dashboard --out|--serve`）：汇总卡片、产物时间线、校验状态、执行记录与过滤；自包含 HTML，无外部资源。
+
+所有里程碑 P0–P6 已完成。dsh web 内嵌面板（Client Slot）与部分企业级验收项仍为后续工作，详见 `docs/plan-v1.1.md` 的待决事项。
 
 ## 结构
 
@@ -61,6 +63,7 @@ pnpm bkagent walg-restore --data-dir /restore --yes
 pnpm bkagent report   --db .bkagent/control.db --since 7d
 pnpm bkagent metrics  --db .bkagent/control.db
 pnpm bkagent retain   --db .bkagent/control.db --daily 7 --weekly 4 --monthly 12 --apply
+pnpm bkagent dashboard --db .bkagent/control.db --out /tmp/dashboard.html
 ```
 
 `inspect` 通过 `psql` 读取实例信息；`restore` 在建库或 `--clean` 时属破坏性操作，须显式 `--yes`。凭据仅经子进程环境变量传递，不出现在 argv 或输出中。

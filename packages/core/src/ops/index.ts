@@ -1,4 +1,5 @@
 export * from './capacity'
+export * from './dashboard'
 export * from './metrics'
 export * from './notify'
 export * from './report'

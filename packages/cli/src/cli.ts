@@ -1,6 +1,7 @@
-import { readFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { userInfo } from 'node:os'
 import { join } from 'node:path'
+import { createServer } from 'node:http'
 import { parseArgs } from 'node:util'
 
 import {
@@ -19,6 +20,7 @@ import {
   forecastCapacity,
   newId,
   planRetention,
+  renderDashboard,
   renderMetrics,
   renderReportMarkdown,
   requiresApproval,
@@ -90,6 +92,7 @@ Usage:
   bkagent watchdog --db <path>
   bkagent trace    --db <path> (--ticket <id> | --plan <id>)
   bkagent notify-test --url <url> [--severity P1|P2|P3|P4] [--title <text>]
+  bkagent dashboard --db <path> (--out <file> | --serve [--port N]) [--since <iso|Nd>]
 
 Environment:
   BKAGENT_DSN    Default DSN when --dsn is omitted
@@ -1419,6 +1422,61 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
           message: 'test event from bkagent',
         })
         write(`${JSON.stringify({ ok: true, severity })}\n`)
+        return 0
+      }
+
+      case 'dashboard': {
+        const { values } = parseArgs({
+          args: [...rest],
+          allowPositionals: false,
+          options: {
+            db: { type: 'string' },
+            out: { type: 'string' },
+            serve: { type: 'boolean', default: false },
+            port: { type: 'string', default: '8787' },
+            since: { type: 'string' },
+          },
+        })
+        if (values.out === undefined && !values.serve) {
+          writeError('bkagent: dashboard requires --out or --serve\n')
+          return 2
+        }
+        const since =
+          values.since === undefined ? undefined : parseSince(values.since, 3650)
+        const generatedAt = new Date().toISOString()
+        const payload = await withRepo(resolveDb(values.db), async (repo) => {
+          const artifacts = await repo.artifacts.list(
+            since === undefined ? {} : { since },
+          )
+          const attempts = await repo.attempts.listSince(
+            since ?? '1970-01-01T00:00:00.000Z',
+          )
+          const report = buildOpsReport({
+            since: since ?? '1970-01-01T00:00:00.000Z',
+            now: generatedAt,
+            artifacts,
+            attempts: attempts.map((attempt) => ({
+              state: attempt.state,
+              errorClass: attempt.errorClass ?? null,
+            })),
+          })
+          return { artifacts, attempts, report }
+        })
+        const html = renderDashboard({ generatedAt, ...payload })
+
+        if (values.out !== undefined) {
+          writeFileSync(values.out, html, 'utf8')
+          write(`${values.out}\n`)
+          return 0
+        }
+
+        const port = Number(values.port)
+        createServer((_request, response) => {
+          response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+          response.end(html)
+        }).listen(port, '127.0.0.1', () => {
+          writeError(`dashboard listening on http://127.0.0.1:${port}\n`)
+        })
         return 0
       }
 
