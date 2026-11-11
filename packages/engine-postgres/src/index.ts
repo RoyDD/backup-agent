@@ -1,5 +1,7 @@
 export * from './engine'
 export * from './logical'
+export * from './pgbackrest'
 export * from './physical'
 export * from './probe'
 export * from './verify'
+export * from './walg'

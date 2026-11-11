@@ -10,8 +10,9 @@ P0 骨架、P0.5 故障模式目录、P1 逻辑备份与恢复均已完成：
 - P0.5：57 条故障目录、15 条本地复现、错误分类与预检规则（`docs/failure-catalog.md`）。
 - P1：`pg_dump` / `psql` 逻辑备份与恢复、Step DAG 执行器、恢复校验（临时库行数比对）、`bkagent backup|restore|verify`。
 - P2：`pg_basebackup` 物理备份、`pg_verifybackup` 完整性校验、PITR 计划（配置写入、恢复启动、promote 断言）、`bkagent backup --mode physical` 与 `bkagent pitr`。
+- P3：pgBackRest 与 WAL-G 编排（备份/恢复/校验/expire/delete retain）、`pgbackrest-*` 与 `walg-*` 命令；两条链路均完成真实集群验证（见 `docs/provider-integration-2026-11-12.md`）。
 
-P3（pgBackRest / WAL-G）尚未开始。
+P4（调度、保留、报表、告警）尚未开始。
 
 ## 结构
 
@@ -29,6 +30,8 @@ packages/
     src/probe.ts        实例探测
     src/logical.ts      pg_dump / pg_restore 计划构建
     src/physical.ts     pg_basebackup 与 PITR 计划构建
+    src/pgbackrest.ts   pgBackRest 编排
+    src/walg.ts         WAL-G 编排
     src/verify.ts       恢复校验与行数比对
   cli/                  @backup-agent/cli（bkagent）
 ```
@@ -46,6 +49,10 @@ pnpm bkagent verify  --dsn '...' --input /backups/app.dump
 pnpm bkagent backup  --dsn '...' --mode physical --out /backups/base --format plain
 pnpm bkagent pitr    --dsn '...' --data-dir /restore --port 55417 --log /tmp/rec.log \
                      --restore-command 'cp /archive/%f %p' --target-time '2026-01-01 00:00:00+00' --yes
+pnpm bkagent pgbackrest-backup  --config /etc/pgbackrest.conf --stanza main --ensure-stanza
+pnpm bkagent pgbackrest-restore --config /etc/pgbackrest.conf --stanza main --data-dir /restore --yes
+pnpm bkagent walg-backup  --data-dir /var/lib/postgresql/data
+pnpm bkagent walg-restore --data-dir /restore --yes
 ```
 
 `inspect` 通过 `psql` 读取实例信息；`restore` 在建库或 `--clean` 时属破坏性操作，须显式 `--yes`。凭据仅经子进程环境变量传递，不出现在 argv 或输出中。

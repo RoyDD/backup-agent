@@ -40,11 +40,18 @@ export function fingerprintFor(
   connection: ConnectionParams,
   ctx: PlanBuildContext,
 ): PlanFingerprint {
+  return fingerprintFromInstance(ctx, `${connection.host}:${connection.port}/${connection.database}`)
+}
+
+/** Fingerprint from inspected facts, for providers that do not use a DSN. */
+export function fingerprintFromInstance(
+  ctx: PlanBuildContext,
+  fallbackTarget: string,
+): PlanFingerprint {
   return {
-    systemIdentifier:
-      ctx.instance.systemIdentifier ?? `unavailable:${connection.host}:${connection.port}`,
+    systemIdentifier: ctx.instance.systemIdentifier ?? `unavailable:${fallbackTarget}`,
     configDigest: ctx.configDigest,
-    targetOid: ctx.instance.databaseOid ?? `db:${connection.database}`,
+    targetOid: ctx.instance.databaseOid ?? `target:${fallbackTarget}`,
     createdAt: ctx.now,
     expiresAt: new Date(Date.parse(ctx.now) + 3_600_000).toISOString(),
   }

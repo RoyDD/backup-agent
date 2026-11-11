@@ -27,8 +27,14 @@ import {
 import {
   ProbeError,
   artifactDatabase,
+  buildPgBackRestBackupPlan,
+  buildPgBackRestExpirePlan,
+  buildPgBackRestRestorePlan,
   buildPhysicalBackupPlan,
   buildPitrRestorePlan,
+  buildWalGBackupPlan,
+  buildWalGPrunePlan,
+  buildWalGRestorePlan,
   postgresEngine,
   requestDigest,
   verifyLogicalRestore,
@@ -52,6 +58,14 @@ Usage:
   bkagent pitr    --dsn <uri> --data-dir <dir> --port <n> --log <path> --restore-command <cmd>
                   (--target-time <ts> | --target-lsn <lsn> | --target-name <name> | --target-xid <xid>)
                   [--action promote|pause|shutdown] [--verify-sql <sql>] [--yes]
+  bkagent pgbackrest-backup  --config <path> --stanza <name> [--type full|diff|incr] [--ensure-stanza]
+  bkagent pgbackrest-restore --config <path> --stanza <name> --data-dir <dir>
+                             [--target-type time|lsn|xid|name|immediate] [--target <value>]
+                             [--start-port <n>] [--log <path>] [--yes]
+  bkagent pgbackrest-expire  --config <path> --stanza <name> [--yes]
+  bkagent walg-backup  --data-dir <PGDATA> [--walg <bin>]
+  bkagent walg-restore --data-dir <dir> [--backup LATEST] [--start-port <n>] [--yes]
+  bkagent walg-prune   --retain-full <n> [--walg <bin>] [--yes]
 
 Environment:
   BKAGENT_DSN    Default DSN when --dsn is omitted
@@ -133,18 +147,45 @@ async function applyPlan(
   executor: Executor,
   deps: CliDeps,
   stateDir: string | undefined,
-  env: Readonly<Record<string, string>>,
+  env?: Readonly<Record<string, string>>,
 ): Promise<Awaited<ReturnType<typeof runPlan>>> {
   const writeError = deps.stderr ?? ((text: string) => process.stderr.write(text))
   return runPlan(plan, {
     executor,
-    env,
+    ...(env === undefined ? {} : { env }),
     systemIdentifier: instance.systemIdentifier,
     ...(stateDir === undefined ? {} : { stateDir }),
     onStep: (event) => {
       if (event.type === 'start') writeError(`[${event.stepId}] running\n`)
     },
   })
+}
+
+function syntheticInstance(): InstanceInfo {
+  return {
+    version: 'unknown',
+    serverVersionNum: 0,
+    currentUser: '',
+    currentDatabase: 'postgres',
+    databaseOid: null,
+    inRecovery: false,
+    systemIdentifier: null,
+    walLevel: 'unknown',
+    archiveMode: 'unknown',
+    databases: [],
+    executionSite: 'local',
+    warnings: ['instance not probed'],
+  }
+}
+
+async function providerContext(
+  dsn: string | undefined,
+  executor: Executor,
+  digest: string,
+): Promise<PlanBuildContext> {
+  const instance =
+    dsn === undefined ? syntheticInstance() : await postgresEngine.probe(executor, parseDsn(dsn))
+  return planContext(instance, digest)
 }
 
 function inferFormat(path: string): LogicalFormat {
@@ -573,6 +614,313 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
           values['state-dir'],
           pitrEnv,
         )
+        write(
+          `${JSON.stringify({ planId: plan.planId, risk: plan.risk, steps: plan.steps.map((step) => step.stepId), result }, null, 2)}\n`,
+        )
+        return result.status === 'succeeded' ? 0 : 1
+      }
+
+      case 'pgbackrest-backup': {
+        const { values } = parseArgs({
+          args: [...rest],
+          allowPositionals: false,
+          options: {
+            config: { type: 'string' },
+            stanza: { type: 'string' },
+            repo: { type: 'string' },
+            type: { type: 'string' },
+            'ensure-stanza': { type: 'boolean', default: false },
+            dsn: { type: 'string' },
+            principal: { type: 'string' },
+            'state-dir': { type: 'string' },
+          },
+        })
+        if (values.config === undefined || values.stanza === undefined) {
+          writeError('bkagent: pgbackrest-backup requires --config and --stanza\n')
+          return 2
+        }
+        const type = values.type as 'full' | 'diff' | 'incr' | undefined
+        if (type !== undefined && !['full', 'diff', 'incr'].includes(type)) {
+          writeError(`bkagent: unsupported backup type "${type}"\n`)
+          return 2
+        }
+        const request = {
+          configPath: values.config,
+          stanza: values.stanza,
+          ...(values.repo === undefined ? {} : { repo: values.repo }),
+          ...(type === undefined ? {} : { type }),
+          ensureStanza: values['ensure-stanza'],
+        }
+        const ctx = await providerContext(
+          values.dsn ?? env.BKAGENT_DSN,
+          executor,
+          requestDigest(request),
+        )
+        const plan = buildPgBackRestBackupPlan(request, ctx)
+        const issues = validate(plan, principalFor(values.principal, env))
+        if (issues.length > 0) {
+          write(`${issueText(issues)}\n`)
+          return 4
+        }
+        const result = await applyPlan(plan, ctx.instance, executor, deps, values['state-dir'])
+        write(
+          `${JSON.stringify({ planId: plan.planId, risk: plan.risk, steps: plan.steps.map((step) => step.stepId), result }, null, 2)}\n`,
+        )
+        return result.status === 'succeeded' ? 0 : 1
+      }
+
+      case 'pgbackrest-restore': {
+        const { values } = parseArgs({
+          args: [...rest],
+          allowPositionals: false,
+          options: {
+            config: { type: 'string' },
+            stanza: { type: 'string' },
+            repo: { type: 'string' },
+            'data-dir': { type: 'string' },
+            'target-type': { type: 'string' },
+            target: { type: 'string' },
+            action: { type: 'string' },
+            delta: { type: 'boolean', default: false },
+            'start-port': { type: 'string' },
+            log: { type: 'string' },
+            dsn: { type: 'string' },
+            yes: { type: 'boolean', default: false },
+            principal: { type: 'string' },
+            'state-dir': { type: 'string' },
+          },
+        })
+        if (
+          values.config === undefined ||
+          values.stanza === undefined ||
+          values['data-dir'] === undefined
+        ) {
+          writeError('bkagent: pgbackrest-restore requires --config --stanza --data-dir\n')
+          return 2
+        }
+        const targetType = values['target-type'] as
+          | 'time'
+          | 'lsn'
+          | 'xid'
+          | 'name'
+          | 'immediate'
+          | undefined
+        if (
+          targetType !== undefined &&
+          !['time', 'lsn', 'xid', 'name', 'immediate'].includes(targetType)
+        ) {
+          writeError(`bkagent: unsupported target type "${targetType}"\n`)
+          return 2
+        }
+        const action = values.action
+        if (action !== undefined && !['promote', 'pause', 'shutdown'].includes(action)) {
+          writeError(`bkagent: unsupported recovery action "${action}"\n`)
+          return 2
+        }
+        const request = {
+          configPath: values.config,
+          stanza: values.stanza,
+          ...(values.repo === undefined ? {} : { repo: values.repo }),
+          dataDirectory: values['data-dir'],
+          ...(targetType === undefined
+            ? {}
+            : { target: { type: targetType, ...(values.target === undefined ? {} : { value: values.target }) } }),
+          ...(action === undefined ? {} : { action: action as 'promote' | 'pause' | 'shutdown' }),
+          delta: values.delta,
+          ...(values['start-port'] === undefined ? {} : { startPort: values['start-port'] }),
+          ...(values.log === undefined ? {} : { logPath: values.log }),
+        }
+        const ctx = await providerContext(
+          values.dsn ?? env.BKAGENT_DSN,
+          executor,
+          requestDigest(request),
+        )
+        const plan = buildPgBackRestRestorePlan(request, ctx)
+        if (!values.yes) {
+          writeError(`bkagent: plan risk is ${plan.risk}; re-run with --yes to proceed\n`)
+          return 2
+        }
+        const issues = validate(plan, principalFor(values.principal, env))
+        if (issues.length > 0) {
+          write(`${issueText(issues)}\n`)
+          return 4
+        }
+        const result = await applyPlan(plan, ctx.instance, executor, deps, values['state-dir'])
+        write(
+          `${JSON.stringify({ planId: plan.planId, risk: plan.risk, steps: plan.steps.map((step) => step.stepId), result }, null, 2)}\n`,
+        )
+        return result.status === 'succeeded' ? 0 : 1
+      }
+
+      case 'pgbackrest-expire': {
+        const { values } = parseArgs({
+          args: [...rest],
+          allowPositionals: false,
+          options: {
+            config: { type: 'string' },
+            stanza: { type: 'string' },
+            repo: { type: 'string' },
+            dsn: { type: 'string' },
+            yes: { type: 'boolean', default: false },
+            principal: { type: 'string' },
+            'state-dir': { type: 'string' },
+          },
+        })
+        if (values.config === undefined || values.stanza === undefined) {
+          writeError('bkagent: pgbackrest-expire requires --config and --stanza\n')
+          return 2
+        }
+        const request = {
+          configPath: values.config,
+          stanza: values.stanza,
+          ...(values.repo === undefined ? {} : { repo: values.repo }),
+        }
+        const ctx = await providerContext(
+          values.dsn ?? env.BKAGENT_DSN,
+          executor,
+          requestDigest(request),
+        )
+        const plan = buildPgBackRestExpirePlan(request, ctx)
+        if (!values.yes) {
+          writeError(`bkagent: plan risk is ${plan.risk}; re-run with --yes to proceed\n`)
+          return 2
+        }
+        const issues = validate(plan, principalFor(values.principal, env))
+        if (issues.length > 0) {
+          write(`${issueText(issues)}\n`)
+          return 4
+        }
+        const result = await applyPlan(plan, ctx.instance, executor, deps, values['state-dir'])
+        write(
+          `${JSON.stringify({ planId: plan.planId, risk: plan.risk, steps: plan.steps.map((step) => step.stepId), result }, null, 2)}\n`,
+        )
+        return result.status === 'succeeded' ? 0 : 1
+      }
+
+      case 'walg-backup': {
+        const { values } = parseArgs({
+          args: [...rest],
+          allowPositionals: false,
+          options: {
+            'data-dir': { type: 'string' },
+            walg: { type: 'string' },
+            dsn: { type: 'string' },
+            principal: { type: 'string' },
+            'state-dir': { type: 'string' },
+          },
+        })
+        if (values['data-dir'] === undefined) {
+          writeError('bkagent: walg-backup requires --data-dir\n')
+          return 2
+        }
+        const request = {
+          dataDirectory: values['data-dir'],
+          ...(values.walg === undefined ? {} : { command: values.walg }),
+        }
+        const ctx = await providerContext(
+          values.dsn ?? env.BKAGENT_DSN,
+          executor,
+          requestDigest(request),
+        )
+        const plan = buildWalGBackupPlan(request, ctx)
+        const issues = validate(plan, principalFor(values.principal, env))
+        if (issues.length > 0) {
+          write(`${issueText(issues)}\n`)
+          return 4
+        }
+        const result = await applyPlan(plan, ctx.instance, executor, deps, values['state-dir'])
+        write(
+          `${JSON.stringify({ planId: plan.planId, risk: plan.risk, steps: plan.steps.map((step) => step.stepId), result }, null, 2)}\n`,
+        )
+        return result.status === 'succeeded' ? 0 : 1
+      }
+
+      case 'walg-restore': {
+        const { values } = parseArgs({
+          args: [...rest],
+          allowPositionals: false,
+          options: {
+            'data-dir': { type: 'string' },
+            backup: { type: 'string' },
+            'start-port': { type: 'string' },
+            log: { type: 'string' },
+            walg: { type: 'string' },
+            dsn: { type: 'string' },
+            yes: { type: 'boolean', default: false },
+            principal: { type: 'string' },
+            'state-dir': { type: 'string' },
+          },
+        })
+        if (values['data-dir'] === undefined) {
+          writeError('bkagent: walg-restore requires --data-dir\n')
+          return 2
+        }
+        const request = {
+          dataDirectory: values['data-dir'],
+          ...(values.backup === undefined ? {} : { backupName: values.backup }),
+          ...(values['start-port'] === undefined ? {} : { startPort: values['start-port'] }),
+          ...(values.log === undefined ? {} : { logPath: values.log }),
+          ...(values.walg === undefined ? {} : { command: values.walg }),
+        }
+        const ctx = await providerContext(
+          values.dsn ?? env.BKAGENT_DSN,
+          executor,
+          requestDigest(request),
+        )
+        const plan = buildWalGRestorePlan(request, ctx)
+        if (!values.yes) {
+          writeError(`bkagent: plan risk is ${plan.risk}; re-run with --yes to proceed\n`)
+          return 2
+        }
+        const issues = validate(plan, principalFor(values.principal, env))
+        if (issues.length > 0) {
+          write(`${issueText(issues)}\n`)
+          return 4
+        }
+        const result = await applyPlan(plan, ctx.instance, executor, deps, values['state-dir'])
+        write(
+          `${JSON.stringify({ planId: plan.planId, risk: plan.risk, steps: plan.steps.map((step) => step.stepId), result }, null, 2)}\n`,
+        )
+        return result.status === 'succeeded' ? 0 : 1
+      }
+
+      case 'walg-prune': {
+        const { values } = parseArgs({
+          args: [...rest],
+          allowPositionals: false,
+          options: {
+            'retain-full': { type: 'string' },
+            walg: { type: 'string' },
+            dsn: { type: 'string' },
+            yes: { type: 'boolean', default: false },
+            principal: { type: 'string' },
+            'state-dir': { type: 'string' },
+          },
+        })
+        if (values['retain-full'] === undefined) {
+          writeError('bkagent: walg-prune requires --retain-full\n')
+          return 2
+        }
+        const request = {
+          retainFull: parsePositiveInt(values['retain-full'], '--retain-full') as number,
+          ...(values.walg === undefined ? {} : { command: values.walg }),
+        }
+        const ctx = await providerContext(
+          values.dsn ?? env.BKAGENT_DSN,
+          executor,
+          requestDigest(request),
+        )
+        const plan = buildWalGPrunePlan(request, ctx)
+        if (!values.yes) {
+          writeError(`bkagent: plan risk is ${plan.risk}; re-run with --yes to proceed\n`)
+          return 2
+        }
+        const issues = validate(plan, principalFor(values.principal, env))
+        if (issues.length > 0) {
+          write(`${issueText(issues)}\n`)
+          return 4
+        }
+        const result = await applyPlan(plan, ctx.instance, executor, deps, values['state-dir'])
         write(
           `${JSON.stringify({ planId: plan.planId, risk: plan.risk, steps: plan.steps.map((step) => step.stepId), result }, null, 2)}\n`,
         )
