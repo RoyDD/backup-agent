@@ -13,7 +13,9 @@ P0 骨架、P0.5 故障模式目录、P1 逻辑备份与恢复均已完成：
 - P3：pgBackRest 与 WAL-G 编排（备份/恢复/校验/expire/delete retain）、`pgbackrest-*` 与 `walg-*` 命令；两条链路均完成真实集群验证（见 `docs/provider-integration-2026-11-12.md`）。
 - P4：GFS 保留（可达性分析）、运行持久化、`catalog` / `retain` / `report` / `metrics` / `capacity` / `watchdog` / `trace` / `notify-test` 命令、systemd 与 cron 模板。
 
-P5（dsh 集成）尚未开始。
+- P5：dsh 工具插件（`pg_inspect` / `pg_backup` / `pg_restore` / `pg_verify` / `pg_catalog` / `pg_report`）、`pg-dba` Preset 与六项技能、安装脚本；见 `docs/dsh-integration.md`。
+
+P6（Web UI 面板）尚未开始。
 
 ## 结构
 
@@ -35,6 +37,7 @@ packages/
     src/pgbackrest.ts   pgBackRest 编排
     src/walg.ts         WAL-G 编排
     src/verify.ts       恢复校验与行数比对
+  dsh-plugin/           @backup-agent/dsh-plugin（Cordis 工具插件）
   cli/                  @backup-agent/cli（bkagent）
 ```
 

@@ -1,0 +1,19 @@
+{
+  "name": "@backup-agent/dsh-plugin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js"
+  ],
+  "dependencies": {
+    "@deepseek-ai/dsh-tools": "0.1.2-rc.1"
+  },
+  "scripts": {
+    "typecheck": "echo 'plain ESM plugin: no typecheck'"
+  }
+}
