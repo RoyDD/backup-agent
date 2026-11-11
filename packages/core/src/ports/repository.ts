@@ -1,4 +1,4 @@
-import type { AttemptId, MandateId, OutboxId, PlanId, TargetId, TicketId } from '../domain/ids'
+import type { ArtifactId, AttemptId, MandateId, OutboxId, PlanId, TargetId, TicketId } from '../domain/ids'
 import type { Plan } from '../domain/plan'
 import type { RiskLevel } from '../domain/risk'
 import type { AttemptState, PlanState, TicketState } from '../domain/state'
@@ -45,6 +45,7 @@ export interface AttemptRecord {
   startedAt: string | null
   finishedAt: string | null
   exitCode: number | null
+  errorClass?: string | null
 }
 
 export const OUTBOX_STATUSES = ['pending', 'processing', 'dispatched', 'failed'] as const
@@ -108,6 +109,37 @@ export interface AttemptStore {
   listRunning(): Promise<AttemptRecord[]>
   /** Running attempts whose lease expired at or before `now`. */
   listExpired(now: string): Promise<AttemptRecord[]>
+  listSince(since: string): Promise<AttemptRecord[]>
+}
+
+export interface ArtifactRecord {
+  id: ArtifactId
+  planId: PlanId | null
+  targetId: TargetId
+  provider: string
+  kind: string
+  parentId: ArtifactId | null
+  path: string
+  sizeBytes: number
+  checksum: string | null
+  verifiedLevel: string | null
+  verifiedAt: string | null
+  protected: boolean
+  createdAt: string
+}
+
+export interface ArtifactFilter {
+  targetId?: TargetId
+  provider?: string
+  since?: string
+  limit?: number
+}
+
+export interface ArtifactStore {
+  insert(record: ArtifactRecord): Promise<void>
+  get(id: ArtifactId): Promise<ArtifactRecord | null>
+  list(filter?: ArtifactFilter): Promise<ArtifactRecord[]>
+  remove(ids: readonly ArtifactId[]): Promise<void>
 }
 
 export interface OutboxAppendInput {
@@ -150,6 +182,7 @@ export interface Repository {
   mandates: MandateStore
   plans: PlanStore
   attempts: AttemptStore
+  artifacts: ArtifactStore
   outbox: OutboxStore
   leases: LeaseStore
   lineage: LineageStore

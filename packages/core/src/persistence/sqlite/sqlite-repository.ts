@@ -2,9 +2,12 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 
-import type { AttemptId, MandateId, OutboxId, PlanId, TargetId, TicketId } from '../../domain/ids'
+import type { ArtifactId, AttemptId, MandateId, OutboxId, PlanId, TargetId, TicketId } from '../../domain/ids'
 import type { Plan } from '../../domain/plan'
 import type {
+  ArtifactFilter,
+  ArtifactRecord,
+  ArtifactStore,
   AttemptRecord,
   AttemptStore,
   LeaseRecord,
@@ -68,6 +71,7 @@ interface AttemptRow {
   started_at: string | null
   finished_at: string | null
   exit_code: number | null
+  error_class: string | null
 }
 
 interface OutboxRow {
@@ -89,6 +93,22 @@ interface LeaseRow {
   owner: string
   token: number
   expires_at: string
+}
+
+interface ArtifactRow {
+  id: string
+  plan_id: string | null
+  target_id: string
+  provider: string
+  kind: string
+  parent_id: string | null
+  path: string
+  size_bytes: number
+  checksum: string | null
+  verified_level: string | null
+  verified_at: string | null
+  protected: number
+  created_at: string
 }
 
 interface LineageRow {
@@ -157,6 +177,7 @@ function mapAttempt(row: AttemptRow): AttemptRecord {
     startedAt: row.started_at,
     finishedAt: row.finished_at,
     exitCode: row.exit_code,
+    errorClass: row.error_class,
   }
 }
 
@@ -172,6 +193,24 @@ function mapOutbox(row: OutboxRow): OutboxRecord {
     leaseExpiresAt: row.lease_expires_at,
     createdAt: row.created_at,
     dispatchedAt: row.dispatched_at,
+  }
+}
+
+function mapArtifact(row: ArtifactRow): ArtifactRecord {
+  return {
+    id: row.id as ArtifactId,
+    planId: row.plan_id === null ? null : (row.plan_id as PlanId),
+    targetId: row.target_id as TargetId,
+    provider: row.provider,
+    kind: row.kind,
+    parentId: row.parent_id === null ? null : (row.parent_id as ArtifactId),
+    path: row.path,
+    sizeBytes: row.size_bytes,
+    checksum: row.checksum,
+    verifiedLevel: row.verified_level,
+    verifiedAt: row.verified_at,
+    protected: row.protected === 1,
+    createdAt: row.created_at,
   }
 }
 
@@ -213,6 +252,7 @@ function createStores(db: DatabaseSync): {
   mandates: MandateStore
   plans: PlanStore
   attempts: AttemptStore
+  artifacts: ArtifactStore
   outbox: OutboxStore
   leases: LeaseStore
   lineage: LineageStore
@@ -312,8 +352,8 @@ function createStores(db: DatabaseSync): {
   const attempts: AttemptStore = {
     async insert(record) {
       db.prepare(
-        `INSERT INTO attempts (id, plan_id, state, owner, lease_token, lease_expires_at, started_at, finished_at, exit_code)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO attempts (id, plan_id, state, owner, lease_token, lease_expires_at, started_at, finished_at, exit_code, error_class)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         record.id,
         record.planId,
@@ -324,6 +364,7 @@ function createStores(db: DatabaseSync): {
         record.startedAt,
         record.finishedAt,
         record.exitCode,
+        record.errorClass ?? null,
       )
     },
     async get(id) {
@@ -336,7 +377,7 @@ function createStores(db: DatabaseSync): {
       const merged = { ...mapAttempt(row), ...patch, state }
       db.prepare(
         `UPDATE attempts
-            SET state = ?, owner = ?, lease_token = ?, lease_expires_at = ?, started_at = ?, finished_at = ?, exit_code = ?
+            SET state = ?, owner = ?, lease_token = ?, lease_expires_at = ?, started_at = ?, finished_at = ?, exit_code = ?, error_class = ?
           WHERE id = ?`,
       ).run(
         merged.state,
@@ -346,6 +387,7 @@ function createStores(db: DatabaseSync): {
         merged.startedAt,
         merged.finishedAt,
         merged.exitCode,
+        merged.errorClass ?? null,
         id,
       )
     },
@@ -364,6 +406,71 @@ function createStores(db: DatabaseSync): {
           )
           .all(now),
       ).map(mapAttempt)
+    },
+    async listSince(since) {
+      return asMany<AttemptRow>(
+        db
+          .prepare(
+            `SELECT * FROM attempts
+              WHERE (finished_at IS NOT NULL AND finished_at >= ?)
+                 OR (finished_at IS NULL AND started_at IS NOT NULL AND started_at >= ?)
+              ORDER BY started_at`,
+          )
+          .all(since, since),
+      ).map(mapAttempt)
+    },
+  }
+
+  const artifacts: ArtifactStore = {
+    async insert(record) {
+      db.prepare(
+        `INSERT INTO artifacts (id, plan_id, target_id, provider, kind, parent_id, path, size_bytes,
+                                checksum, verified_level, verified_at, protected, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        record.id,
+        record.planId,
+        record.targetId,
+        record.provider,
+        record.kind,
+        record.parentId,
+        record.path,
+        record.sizeBytes,
+        record.checksum,
+        record.verifiedLevel,
+        record.verifiedAt,
+        record.protected ? 1 : 0,
+        record.createdAt,
+      )
+    },
+    async get(id) {
+      const row = asOne<ArtifactRow>(db.prepare('SELECT * FROM artifacts WHERE id = ?').get(id))
+      return row ? mapArtifact(row) : null
+    },
+    async list(filter: ArtifactFilter = {}) {
+      const clauses: string[] = []
+      const params: Array<string | number> = []
+      if (filter.targetId !== undefined) {
+        clauses.push('target_id = ?')
+        params.push(filter.targetId)
+      }
+      if (filter.provider !== undefined) {
+        clauses.push('provider = ?')
+        params.push(filter.provider)
+      }
+      if (filter.since !== undefined) {
+        clauses.push('created_at >= ?')
+        params.push(filter.since)
+      }
+      const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : ''
+      const limit = filter.limit !== undefined ? ` LIMIT ${filter.limit}` : ''
+      return asMany<ArtifactRow>(
+        db.prepare(`SELECT * FROM artifacts ${where} ORDER BY created_at DESC${limit}`).all(...params),
+      ).map(mapArtifact)
+    },
+    async remove(ids) {
+      const statement = db.prepare('DELETE FROM artifacts WHERE id = ?')
+      for (const id of ids) statement.run(id)
     },
   }
 
@@ -538,7 +645,7 @@ function createStores(db: DatabaseSync): {
     },
   }
 
-  return { tickets, mandates, plans, attempts, outbox, leases, lineage }
+  return { tickets, mandates, plans, attempts, artifacts, outbox, leases, lineage }
 }
 
 function lockStore<T extends object>(store: T, mutex: Mutex): T {
@@ -554,6 +661,8 @@ function lockStore<T extends object>(store: T, mutex: Mutex): T {
 
 const MIGRATIONS: readonly { name: string; file: URL }[] = [
   { name: '001_init.sql', file: new URL('./migrations/001_init.sql', import.meta.url) },
+  { name: '002_artifacts.sql', file: new URL('./migrations/002_artifacts.sql', import.meta.url) },
+  { name: '003_attempt_error.sql', file: new URL('./migrations/003_attempt_error.sql', import.meta.url) },
 ]
 
 function runMigrations(db: DatabaseSync): void {
@@ -632,6 +741,7 @@ export async function createSqliteRepository(
     mandates: lockStore(stores.mandates, mutex),
     plans: lockStore(stores.plans, mutex),
     attempts: lockStore(stores.attempts, mutex),
+    artifacts: lockStore(stores.artifacts, mutex),
     outbox: lockStore(stores.outbox, mutex),
     leases: lockStore(stores.leases, mutex),
     lineage: lockStore(stores.lineage, mutex),

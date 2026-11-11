@@ -11,8 +11,9 @@ P0 骨架、P0.5 故障模式目录、P1 逻辑备份与恢复均已完成：
 - P1：`pg_dump` / `psql` 逻辑备份与恢复、Step DAG 执行器、恢复校验（临时库行数比对）、`bkagent backup|restore|verify`。
 - P2：`pg_basebackup` 物理备份、`pg_verifybackup` 完整性校验、PITR 计划（配置写入、恢复启动、promote 断言）、`bkagent backup --mode physical` 与 `bkagent pitr`。
 - P3：pgBackRest 与 WAL-G 编排（备份/恢复/校验/expire/delete retain）、`pgbackrest-*` 与 `walg-*` 命令；两条链路均完成真实集群验证（见 `docs/provider-integration-2026-11-12.md`）。
+- P4：GFS 保留（可达性分析）、运行持久化、`catalog` / `retain` / `report` / `metrics` / `capacity` / `watchdog` / `trace` / `notify-test` 命令、systemd 与 cron 模板。
 
-P4（调度、保留、报表、告警）尚未开始。
+P5（dsh 集成）尚未开始。
 
 ## 结构
 
@@ -24,6 +25,7 @@ packages/
     src/plan/           校验、指纹、重基
     src/executor/       本地执行器、错误分类
     src/runner/         谓词求值、Step DAG 执行、重试、检查点
+    src/ops/            保留、报表、指标、容量预测、通知
     src/persistence/    SQLite 控制库、Outbox、租约、对账
     src/testkit/        FakeExecutor、FixedClock
   engine-postgres/      @backup-agent/engine-postgres
@@ -53,6 +55,9 @@ pnpm bkagent pgbackrest-backup  --config /etc/pgbackrest.conf --stanza main --en
 pnpm bkagent pgbackrest-restore --config /etc/pgbackrest.conf --stanza main --data-dir /restore --yes
 pnpm bkagent walg-backup  --data-dir /var/lib/postgresql/data
 pnpm bkagent walg-restore --data-dir /restore --yes
+pnpm bkagent report   --db .bkagent/control.db --since 7d
+pnpm bkagent metrics  --db .bkagent/control.db
+pnpm bkagent retain   --db .bkagent/control.db --daily 7 --weekly 4 --monthly 12 --apply
 ```
 
 `inspect` 通过 `psql` 读取实例信息；`restore` 在建库或 `--clean` 时属破坏性操作，须显式 `--yes`。凭据仅经子进程环境变量传递，不出现在 argv 或输出中。

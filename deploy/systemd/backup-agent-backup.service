@@ -1,0 +1,14 @@
+[Unit]
+Description=backup-agent PostgreSQL backup
+Documentation=file:///usr/share/doc/backup-agent/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=postgres
+EnvironmentFile=/etc/backup-agent/backup.env
+ExecStart=/usr/local/bin/bkagent backup --dsn ${BKAGENT_DSN} --database ${BKAGENT_DATABASE} --out ${BKAGENT_OUTPUT} --format custom --db ${BKAGENT_CONTROL_DB}
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

@@ -1,0 +1,12 @@
+# backup-agent cron example.
+# Install as /etc/cron.d/backup-agent (root) or in the postgres user's crontab.
+#
+# The environment file supplies BKAGENT_DSN, BKAGENT_DATABASE, BKAGENT_OUTPUT
+# and BKAGENT_CONTROL_DB. Keep credentials out of the crontab itself.
+
+SHELL=/bin/sh
+PATH=/usr/local/bin:/usr/bin:/bin
+BKAGENT_ENV=/etc/backup-agent/backup.env
+
+# m  h  dom mon dow   command
+0    2  *   *   *     set -a; . "$BKAGENT_ENV"; set +a; /usr/local/bin/bkagent backup --dsn "$BKAGENT_DSN" --database "$BKAGENT_DATABASE" --out "$BKAGENT_OUTPUT" --format custom --db "$BKAGENT_CONTROL_DB" >> /var/log/bkagent-backup.log 2>&1
