@@ -1377,19 +1377,38 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
           writeError('bkagent: trace requires --ticket or --plan\n')
           return 2
         }
+        const epoch = '1970-01-01T00:00:00.000Z'
         const trace = await withRepo(resolveDb(values.db), async (repo) => {
           if (values.ticket !== undefined) {
             const ticketId = asTicketId(values.ticket)
+            const plans = await repo.plans.listByTicket(ticketId)
+            const planIds = new Set(plans.map((plan) => plan.id))
+            const attempts = (await repo.attempts.listSince(epoch)).filter((attempt) =>
+              planIds.has(attempt.planId),
+            )
+            const artifacts = (await repo.artifacts.list({})).filter(
+              (artifact) => artifact.planId !== null && planIds.has(artifact.planId),
+            )
             return {
               ticket: await repo.tickets.get(ticketId),
               mandates: await repo.mandates.listByTicket(ticketId),
-              plans: await repo.plans.listByTicket(ticketId),
+              plans,
+              attempts,
+              artifacts,
               lineage: await repo.lineage.listFor('ticket', values.ticket as string),
             }
           }
           const planId = asPlanId(values.plan as string)
+          const attempts = (await repo.attempts.listSince(epoch)).filter(
+            (attempt) => attempt.planId === planId,
+          )
+          const artifacts = (await repo.artifacts.list({})).filter(
+            (artifact) => artifact.planId === planId,
+          )
           return {
             plan: await repo.plans.get(planId),
+            attempts,
+            artifacts,
             lineage: await repo.lineage.listFor('plan', values.plan as string),
           }
         })

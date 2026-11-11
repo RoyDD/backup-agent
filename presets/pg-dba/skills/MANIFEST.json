@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "generatedAt": "2026-11-11T16:30:45.970Z",
+  "entries": [
+    {
+      "name": "engine-extend",
+      "path": "engine-extend/SKILL.md",
+      "sha256": "ebe15ec92dd5bb81256ef0d075a413578732b64bd74e0356013ee39cb2eda369"
+    },
+    {
+      "name": "pg-backup",
+      "path": "pg-backup/SKILL.md",
+      "sha256": "433961c2161fa3c2b8403766861305d7ed26234b1dbab7b8fc3ddba9e3e1df28"
+    },
+    {
+      "name": "pg-pitr",
+      "path": "pg-pitr/SKILL.md",
+      "sha256": "4efb3242d44d4b436b6a4a8151f8e3215c114a6063412d6bdbb1ee9435fff8fd"
+    },
+    {
+      "name": "pg-restore",
+      "path": "pg-restore/SKILL.md",
+      "sha256": "ad73ba4ecb025cfc8f2a5b2fcaf0891efa2f7e387cd1f2f0078ea0eace521b14"
+    },
+    {
+      "name": "pg-troubleshoot",
+      "path": "pg-troubleshoot/SKILL.md",
+      "sha256": "5819700b500fff61fb210b419f25e353d8449de06868c034a1fc0965d0a06c04"
+    },
+    {
+      "name": "pg-verify",
+      "path": "pg-verify/SKILL.md",
+      "sha256": "343c9bb04187bc4fcabdd96a458b461d9c18044d7b1915b0d0743230525a02bd"
+    }
+  ]
+}
