@@ -19,8 +19,9 @@ command -v dsh >/dev/null 2>&1 || {
   exit 1
 }
 
-echo "Building the bkagent bundle..."
+echo "Building the bkagent bundles..."
 pnpm --dir "$REPO" build:cli
+pnpm --dir "$REPO" build:knowledge
 
 echo "Installing preset to $PRESET_DIR"
 mkdir -p "$(dirname "$PRESET_DIR")"

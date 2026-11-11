@@ -12,6 +12,12 @@ export const name = 'backup-agent-tools'
 export const inject = ['tools']
 
 const DEFAULT_CLI = fileURLToPath(new URL('../../dist/bkagent.mjs', import.meta.url))
+const DEFAULT_KNOWLEDGE_CLI = fileURLToPath(
+  new URL('../../dist/bkagent-knowledge.mjs', import.meta.url),
+)
+const DEFAULT_KNOWLEDGE_DB = fileURLToPath(
+  new URL('../../var/knowledge.sqlite', import.meta.url),
+)
 
 export function createRunner(options = {}) {
   const cliPath = options.cliPath ?? process.env.BKAGENT_CLI ?? DEFAULT_CLI
@@ -37,6 +43,13 @@ export function createRunner(options = {}) {
   }
 }
 
+export function createKnowledgeRunner(options = {}) {
+  return createRunner({
+    cliPath:
+      options.cliPath ?? process.env.BKAGENT_KNOWLEDGE_CLI ?? DEFAULT_KNOWLEDGE_CLI,
+  })
+}
+
 export function parseCliResult(result) {
   if (result.code !== 0) {
     const detail = (result.stderr || result.stdout || '').trim().slice(0, 2000)
@@ -55,7 +68,7 @@ function defaultDb() {
   return process.env.BKAGENT_DB ?? '.bkagent/control.db'
 }
 
-export function createHandlers(run) {
+export function createHandlers(run, knowledgeRun = run) {
   return {
     async inspect(args) {
       return parseCliResult(await run(['inspect', '--dsn', args.dsn, '--format', 'json']))
@@ -100,6 +113,16 @@ export function createHandlers(run) {
       const argv = ['report', '--db', args.db ?? defaultDb(), '--format', 'json']
       if (args.since !== undefined) argv.push('--since', args.since)
       return parseCliResult(await run(argv))
+    },
+
+    async kbSearch(args) {
+      const argv = ['ask', args.query, '--json']
+      if (args.k !== undefined) argv.push('--k', String(args.k))
+      argv.push(
+        '--db',
+        args.db ?? process.env.BK_KNOWLEDGE_DB ?? DEFAULT_KNOWLEDGE_DB,
+      )
+      return parseCliResult(await knowledgeRun(argv))
     },
   }
 }
@@ -147,7 +170,8 @@ function textTool(toolName, description, parameters, execute) {
 
 export function apply(ctx) {
   const run = createRunner()
-  const handlers = createHandlers(run)
+  const knowledgeRun = createKnowledgeRunner()
+  const handlers = createHandlers(run, knowledgeRun)
 
   ctx.tools.register(
     textTool(
@@ -227,6 +251,19 @@ export function apply(ctx) {
         limit: { type: 'number', description: '返回条数上限' },
       },
       (args) => handlers.catalog(args),
+    ),
+  )
+
+  ctx.tools.register(
+    textTool(
+      'kb_search',
+      '只读：在 PostgreSQL 备份恢复证据库（SAG2）中检索原文段落，返回 source#ordinal、标题路径与得分。只返回证据，不生成结论。',
+      {
+        query: { type: 'string', required: true, description: '检索问题' },
+        k: { type: 'number', description: '返回条数，默认 5' },
+        db: { type: 'string', description: '知识索引路径' },
+      },
+      (args) => handlers.kbSearch(args),
     ),
   )
 

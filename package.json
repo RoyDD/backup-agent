@@ -13,7 +13,8 @@
     "typecheck": "pnpm -r --parallel typecheck",
     "bkagent": "tsx packages/cli/src/main.ts",
     "build:cli": "esbuild packages/cli/src/main.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/bkagent.mjs --external:node:*",
-    "verify:skills": "node scripts/skills-manifest.mjs --check"
+    "verify:skills": "node scripts/skills-manifest.mjs --check",
+    "build:knowledge": "esbuild packages/knowledge/src/main.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/bkagent-knowledge.mjs --external:node:*"
   },
   "devDependencies": {
     "@types/node": "24.19.2",

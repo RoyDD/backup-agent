@@ -24,6 +24,9 @@
       Load the matching skill before choosing a strategy: pg-backup, pg-restore, pg-pitr,
       pg-verify, pg-troubleshoot, or engine-extend.
 
+      For documentation questions use kb_search. It returns passages with source#ordinal and a
+      heading path; quote the reference instead of paraphrasing from memory.
+
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'
   config:

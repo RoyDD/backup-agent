@@ -32,6 +32,7 @@ scripts/install-dsh.sh web
 | `pg_verify` | 恢复到临时库并比对行数 | 可逆 |
 | `pg_catalog` | 备份产物清单 | 只读 |
 | `pg_report` | 运行报表 | 只读 |
+| `kb_search` | 在 SAG2 证据库中检索原文段落（source#ordinal + 标题路径） | 只读 |
 
 `pg_restore` 在 `createDatabase` 或 `clean` 为真时调用 `ctx.approval.request()`；没有发起主体或审批服务不可用时**失败关闭**。
 
@@ -70,4 +71,5 @@ console.log(info.serverVersionNum)
 
 - 不在插件内执行 SQL 或拼接 Shell 字符串。
 - Preset 与技能随目录复制，不修改 dsh 自带的 preset。
+- `kb_search` 依赖 `dist/bkagent-knowledge.mjs` 与 `var/knowledge.sqlite`；先运行 `pnpm --filter @backup-agent/knowledge index`。
 - 插件只依赖 `@deepseek-ai/dsh-tools`；dsh 运行时提供 `ctx.tools` 与 `ctx.approval`。

@@ -97,4 +97,18 @@ describe('dsh plugin handlers', () => {
       requireApproval(ctx, { agent: {}, callId: 'c', signal: new AbortController().signal }, 'pg_restore', 'x'),
     ).resolves.toBeUndefined()
   })
+
+  it('builds a knowledge ask argv', async () => {
+    const { calls, run } = fakeRun({ code: 0, stdout: '{"hits":[]}', stderr: '' })
+    await createHandlers(run).kbSearch({ query: '归档失败', k: 3, db: '/tmp/kb.sqlite' })
+    expect(calls[0]).toEqual([
+      'ask',
+      '归档失败',
+      '--json',
+      '--k',
+      '3',
+      '--db',
+      '/tmp/kb.sqlite',
+    ])
+  })
 })

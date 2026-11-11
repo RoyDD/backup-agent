@@ -47,6 +47,27 @@ importers:
         specifier: workspace:*
         version: link:../core
 
+  packages/knowledge:
+    devDependencies:
+      cheerio:
+        specifier: ^1.0.0
+        version: 1.2.0
+      tsx:
+        specifier: 4.23.15
+        version: 4.23.15
+      turndown:
+        specifier: ^7.2.0
+        version: 7.2.5
+      turndown-plugin-gfm:
+        specifier: ^1.0.2
+        version: 1.0.2
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: 4.1.12
+        version: 4.1.12(@types/node@24.19.2)(vite@8.3.7(@types/node@24.19.2)(esbuild@0.28.2)(tsx@4.23.15))
+
 packages:
 
   '@deepseek-ai/cordis@4.1.0':

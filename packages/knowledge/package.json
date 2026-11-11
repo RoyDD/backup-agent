@@ -1,0 +1,28 @@
+{
+  "name": "@backup-agent/knowledge",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "fetch-corpus": "node scripts/fetch-corpus.mjs",
+    "index": "tsx src/main.ts index",
+    "ask": "tsx src/main.ts ask",
+    "eval": "tsx src/main.ts eval",
+    "stats": "tsx src/main.ts stats",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "devDependencies": {
+    "cheerio": "^1.0.0",
+    "turndown": "^7.2.0",
+    "turndown-plugin-gfm": "^1.0.2",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vitest": "4.1.12"
+  },
+  "bin": {
+    "bkagent-knowledge": "./src/main.ts"
+  }
+}
