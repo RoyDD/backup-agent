@@ -2,7 +2,7 @@ import type { ErrorClass } from './errors'
 import type { MandateId, PlanId, TargetId, TicketId } from './ids'
 import type { RiskLevel } from './risk'
 
-export const STEP_KINDS = ['probe', 'exec', 'transfer', 'verify', 'notify'] as const
+export const STEP_KINDS = ['probe', 'exec', 'transfer', 'verify', 'write-file', 'notify'] as const
 export type StepKind = (typeof STEP_KINDS)[number]
 
 export const CHECKPOINT_MODES = ['none', 'before', 'after'] as const
@@ -37,6 +37,13 @@ export interface RetryPolicy {
   readonly retryOn: readonly ErrorClass[]
 }
 
+export interface FileWrite {
+  readonly path: string
+  readonly content: string
+  /** Octal permission bits, e.g. 0o600. */
+  readonly mode?: number
+}
+
 export interface Step {
   readonly stepId: string
   readonly kind: StepKind
@@ -44,6 +51,8 @@ export interface Step {
   readonly dependsOn: readonly string[]
   /** Required for `exec` and `transfer`; forbidden for other kinds. */
   readonly argv?: readonly string[]
+  /** Required for `write-file`; forbidden for other kinds. */
+  readonly file?: FileWrite
   readonly preconditions: readonly Predicate[]
   readonly postconditions: readonly Predicate[]
   readonly retry: RetryPolicy

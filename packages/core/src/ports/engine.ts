@@ -17,6 +17,12 @@ export interface InstanceInfo {
   databases: string[]
   executionSite: string
   warnings: string[]
+  isSuperuser?: boolean
+  canReplicate?: boolean
+  currentLsn?: string | null
+  lastArchivedWal?: string | null
+  archiverFailedCount?: number | null
+  archiveConfigured?: boolean
 }
 
 export type LogicalFormat = 'custom' | 'directory' | 'plain'

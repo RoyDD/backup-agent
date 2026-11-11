@@ -1,5 +1,6 @@
-import { statSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { userInfo } from 'node:os'
+import { join } from 'node:path'
 import { parseArgs } from 'node:util'
 
 import {
@@ -26,9 +27,13 @@ import {
 import {
   ProbeError,
   artifactDatabase,
+  buildPhysicalBackupPlan,
+  buildPitrRestorePlan,
   postgresEngine,
   requestDigest,
   verifyLogicalRestore,
+  type PhysicalBackupRequest,
+  type PitrRestoreRequest,
 } from '@backup-agent/engine-postgres'
 
 import { inspectInstance, parseDsn } from './inspect'
@@ -37,12 +42,16 @@ const USAGE = `bkagent — PostgreSQL backup and restore agent
 
 Usage:
   bkagent inspect --dsn <uri> [--format json|text]
-  bkagent backup  --dsn <uri> --out <path> [--database <db>] [--format custom|directory|plain]
-                  [--jobs N] [--compress N] [--table t]... [--schema s]...
+  bkagent backup  --dsn <uri> --out <path> [--mode logical|physical] [--database <db>]
+                  [--format custom|directory|plain|tar] [--jobs N] [--compress N]
+                  [--table t]... [--schema s]... [--wal-method stream|fetch] [--label L]
   bkagent restore --dsn <uri> --input <path> [--database <db>] [--format custom|directory|plain]
                   [--create-database] [--clean] [--if-exists] [--no-owner] [--jobs N] [--yes]
   bkagent verify  --dsn <uri> --input <path> [--database <source-db>] [--format custom|directory|plain]
                   [--jobs N] [--no-owner] [--keep-scratch]
+  bkagent pitr    --dsn <uri> --data-dir <dir> --port <n> --log <path> --restore-command <cmd>
+                  (--target-time <ts> | --target-lsn <lsn> | --target-name <name> | --target-xid <xid>)
+                  [--action promote|pause|shutdown] [--verify-sql <sql>] [--yes]
 
 Environment:
   BKAGENT_DSN    Default DSN when --dsn is omitted
@@ -217,9 +226,15 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
             dsn: { type: 'string' },
             database: { type: 'string' },
             out: { type: 'string' },
-            format: { type: 'string', default: 'custom' },
+            mode: { type: 'string', default: 'logical' },
+            format: { type: 'string' },
             jobs: { type: 'string' },
             compress: { type: 'string' },
+            'wal-method': { type: 'string' },
+            checkpoint: { type: 'string' },
+            label: { type: 'string' },
+            'max-rate': { type: 'string' },
+            'parse-wal': { type: 'boolean', default: false },
             table: { type: 'string', multiple: true, default: [] },
             schema: { type: 'string', multiple: true, default: [] },
             principal: { type: 'string' },
@@ -231,12 +246,74 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
           writeError('bkagent: backup requires --dsn and --out\n')
           return 2
         }
+        const mode = values.mode ?? 'logical'
+        if (mode !== 'logical' && mode !== 'physical') {
+          writeError(`bkagent: unsupported mode "${mode}"\n`)
+          return 2
+        }
+        const connection = parseDsn(dsn)
+        const instance = await postgresEngine.probe(executor, connection)
+        const principal = principalFor(values.principal, env)
+
+        if (mode === 'physical') {
+          const format = (values.format ?? 'plain') as 'plain' | 'tar'
+          if (format !== 'plain' && format !== 'tar') {
+            writeError(`bkagent: unsupported physical format "${format}"\n`)
+            return 2
+          }
+          if (values.jobs !== undefined) {
+            writeError('bkagent: --jobs is not supported for physical backups\n')
+            return 2
+          }
+          const walMethod = values['wal-method'] as 'stream' | 'fetch' | undefined
+          if (walMethod !== undefined && walMethod !== 'stream' && walMethod !== 'fetch') {
+            writeError(`bkagent: unsupported wal method "${walMethod}"\n`)
+            return 2
+          }
+          const checkpoint = values.checkpoint as 'fast' | 'spread' | undefined
+          if (checkpoint !== undefined && checkpoint !== 'fast' && checkpoint !== 'spread') {
+            writeError(`bkagent: unsupported checkpoint mode "${checkpoint}"\n`)
+            return 2
+          }
+          const physical: PhysicalBackupRequest = {
+            connection,
+            outputPath: values.out,
+            format,
+            ...(walMethod === undefined ? {} : { walMethod }),
+            ...(checkpoint === undefined ? {} : { checkpoint }),
+            ...(values.compress === undefined
+              ? {}
+              : { compression: parsePositiveInt(values.compress, '--compress') as number }),
+            ...(values.label === undefined ? {} : { label: values.label }),
+            ...(values['max-rate'] === undefined ? {} : { maxRate: values['max-rate'] }),
+            parseWal: values['parse-wal'],
+          }
+          const ctx = planContext(instance, requestDigest(physical))
+          const plan = buildPhysicalBackupPlan(physical, ctx)
+          const issues = validate(plan, principal)
+          if (issues.length > 0) {
+            write(`${issueText(issues)}\n`)
+            return 4
+          }
+          const result = await applyPlan(
+            plan,
+            instance,
+            executor,
+            deps,
+            values['state-dir'],
+            connectionEnv(connection),
+          )
+          write(
+            `${JSON.stringify({ planId: plan.planId, risk: plan.risk, steps: plan.steps.map((step) => step.stepId), result }, null, 2)}\n`,
+          )
+          return result.status === 'succeeded' ? 0 : 1
+        }
+
         const format = (values.format ?? 'custom') as LogicalFormat
         if (!['custom', 'directory', 'plain'].includes(format)) {
           writeError(`bkagent: unsupported format "${format}"\n`)
           return 2
         }
-        const connection = parseDsn(dsn)
         const request: LogicalBackupRequest = {
           connection,
           database: values.database ?? connection.database,
@@ -257,10 +334,9 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
           writeError('bkagent: --jobs requires --format directory\n')
           return 2
         }
-        const instance = await postgresEngine.probe(executor, connection)
         const ctx = planContext(instance, requestDigest(request))
         const plan = postgresEngine.planLogicalBackup(request, ctx)
-        const issues = validate(plan, principalFor(values.principal, env))
+        const issues = validate(plan, principal)
         if (issues.length > 0) {
           write(`${issueText(issues)}\n`)
           return 4
@@ -392,6 +468,115 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
         })
         write(`${JSON.stringify(report, null, 2)}\n`)
         return report.ok ? 0 : 1
+      }
+
+      case 'pitr': {
+        const { values } = parseArgs({
+          args: [...rest],
+          allowPositionals: false,
+          options: {
+            dsn: { type: 'string' },
+            'data-dir': { type: 'string' },
+            port: { type: 'string' },
+            log: { type: 'string' },
+            'restore-command': { type: 'string' },
+            'target-time': { type: 'string' },
+            'target-lsn': { type: 'string' },
+            'target-name': { type: 'string' },
+            'target-xid': { type: 'string' },
+            action: { type: 'string' },
+            'verify-sql': { type: 'string' },
+            yes: { type: 'boolean', default: false },
+            principal: { type: 'string' },
+            'state-dir': { type: 'string' },
+          },
+        })
+        const dsn = values.dsn ?? env.BKAGENT_DSN
+        if (
+          dsn === undefined ||
+          values['data-dir'] === undefined ||
+          values.port === undefined ||
+          values.log === undefined ||
+          values['restore-command'] === undefined
+        ) {
+          writeError(
+            'bkagent: pitr requires --dsn --data-dir --port --log --restore-command\n',
+          )
+          return 2
+        }
+        const targetCount = [
+          values['target-time'],
+          values['target-lsn'],
+          values['target-name'],
+          values['target-xid'],
+        ].filter((value) => value !== undefined).length
+        if (targetCount !== 1) {
+          writeError(
+            'bkagent: exactly one of --target-time|--target-lsn|--target-name|--target-xid is required\n',
+          )
+          return 2
+        }
+        const action = values.action
+        if (action !== undefined && !['promote', 'pause', 'shutdown'].includes(action)) {
+          writeError(`bkagent: unsupported recovery action "${action}"\n`)
+          return 2
+        }
+
+        const connection = parseDsn(dsn)
+        const instance = await postgresEngine.probe(executor, connection)
+        const dataDirectory = values['data-dir']
+        let existingAutoConf = ''
+        try {
+          existingAutoConf = readFileSync(join(dataDirectory, 'postgresql.auto.conf'), 'utf8')
+        } catch {
+          existingAutoConf = ''
+        }
+
+        const request: PitrRestoreRequest = {
+          connection,
+          dataDirectory,
+          port: values.port,
+          logPath: values.log,
+          restoreCommand: values['restore-command'],
+          target: {
+            ...(values['target-time'] === undefined ? {} : { time: values['target-time'] }),
+            ...(values['target-lsn'] === undefined ? {} : { lsn: values['target-lsn'] }),
+            ...(values['target-name'] === undefined ? {} : { name: values['target-name'] }),
+            ...(values['target-xid'] === undefined ? {} : { xid: values['target-xid'] }),
+          },
+          ...(action === undefined
+            ? {}
+            : { action: action as 'promote' | 'pause' | 'shutdown' }),
+          existingAutoConf,
+          ...(values['verify-sql'] === undefined ? {} : { verifySql: values['verify-sql'] }),
+        }
+
+        const ctx = planContext(instance, requestDigest(request))
+        const plan = buildPitrRestorePlan(request, ctx)
+        if (!values.yes) {
+          writeError(`bkagent: plan risk is ${plan.risk}; re-run with --yes to proceed\n`)
+          return 2
+        }
+        const issues = validate(plan, principalFor(values.principal, env))
+        if (issues.length > 0) {
+          write(`${issueText(issues)}\n`)
+          return 4
+        }
+        const pitrEnv = connectionEnv(
+          withDatabase({ ...connection, host: '127.0.0.1', port: values.port }, 'postgres'),
+        )
+        const result = await applyPlan(
+          plan,
+          instance,
+          executor,
+          deps,
+          values['state-dir'],
+          pitrEnv,
+        )
+        write(
+          `${JSON.stringify({ planId: plan.planId, risk: plan.risk, steps: plan.steps.map((step) => step.stepId), result }, null, 2)}\n`,
+        )
+        return result.status === 'succeeded' ? 0 : 1
       }
 
       default:

@@ -123,4 +123,39 @@ describe('validatePlan', () => {
       true,
     )
   })
+
+  it('requires a file payload for write-file steps', () => {
+    const withFile = makePlan({
+      steps: [
+        makeStep({
+          kind: 'write-file',
+          argv: undefined,
+          file: { path: '/tmp/recovery.signal', content: '', mode: 0o600 },
+          idempotencyKey: 'signal',
+        }),
+      ],
+    })
+    expect(validatePlan(withFile, makeContext())).toEqual([])
+
+    const missing = makePlan({
+      steps: [makeStep({ kind: 'write-file', argv: undefined, idempotencyKey: 'signal' })],
+    })
+    expect(
+      validatePlan(missing, makeContext()).some((issue) => issue.path.endsWith('.file')),
+    ).toBe(true)
+
+    const withArgv = makePlan({
+      steps: [
+        makeStep({
+          kind: 'write-file',
+          argv: ['echo'],
+          file: { path: '/tmp/x', content: 'x' },
+          idempotencyKey: 'signal',
+        }),
+      ],
+    })
+    expect(
+      validatePlan(withArgv, makeContext()).some((issue) => issue.path.endsWith('.argv')),
+    ).toBe(true)
+  })
 })

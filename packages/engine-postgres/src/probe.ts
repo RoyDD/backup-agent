@@ -24,6 +24,12 @@ const BASIC_SQL = `select json_build_object(
   'inRecovery', pg_is_in_recovery(),
   'walLevel', current_setting('wal_level'),
   'archiveMode', current_setting('archive_mode'),
+  'archiveConfigured', current_setting('archive_command') <> '',
+  'isSuperuser', (select rolsuper from pg_roles where rolname = current_user),
+  'canReplicate', (select rolreplication from pg_roles where rolname = current_user),
+  'currentLsn', case when pg_is_in_recovery() then null else pg_current_wal_lsn()::text end,
+  'lastArchivedWal', (select last_archived_wal from pg_stat_archiver),
+  'archiverFailedCount', (select failed_count from pg_stat_archiver),
   'databases', (select coalesce(json_agg(datname order by datname), '[]'::json)
                   from pg_database where not datistemplate)
 )::text`
@@ -39,6 +45,12 @@ interface BasicProbe {
   inRecovery: boolean
   walLevel: string
   archiveMode: string
+  archiveConfigured: boolean
+  isSuperuser: boolean
+  canReplicate: boolean
+  currentLsn: string | null
+  lastArchivedWal: string | null
+  archiverFailedCount: number | null
   databases: string[]
 }
 
@@ -66,6 +78,13 @@ function parseBasic(raw: string): BasicProbe {
     inRecovery: parsed.inRecovery,
     walLevel: typeof parsed.walLevel === 'string' ? parsed.walLevel : 'unknown',
     archiveMode: typeof parsed.archiveMode === 'string' ? parsed.archiveMode : 'unknown',
+    archiveConfigured: parsed.archiveConfigured === true,
+    isSuperuser: parsed.isSuperuser === true,
+    canReplicate: parsed.canReplicate === true,
+    currentLsn: typeof parsed.currentLsn === 'string' ? parsed.currentLsn : null,
+    lastArchivedWal: typeof parsed.lastArchivedWal === 'string' ? parsed.lastArchivedWal : null,
+    archiverFailedCount:
+      typeof parsed.archiverFailedCount === 'number' ? parsed.archiverFailedCount : null,
     databases: Array.isArray(parsed.databases)
       ? parsed.databases.filter((name): name is string => typeof name === 'string')
       : [],

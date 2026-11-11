@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
 import type { ErrorClass } from '../domain/errors'
 import type { Plan, Step } from '../domain/plan'
@@ -202,6 +202,45 @@ export async function runPlan(plan: Plan, options: RunPlanOptions): Promise<RunP
         errorClass: 'permanent',
         error: 'precondition failed',
       }
+    }
+
+    if (step.kind === 'write-file') {
+      let outcome: StepOutcome
+      try {
+        if (!step.file) throw new Error('step has no file payload')
+        mkdirSync(dirname(step.file.path), { recursive: true })
+        writeFileSync(step.file.path, step.file.content, 'utf8')
+        if (step.file.mode !== undefined) chmodSync(step.file.path, step.file.mode)
+        const postconditionsHold = await evaluateAll(step.postconditions, predicateContext)
+        outcome = postconditionsHold
+          ? {
+              stepId: step.stepId,
+              status: 'succeeded',
+              attempts: 1,
+              exitCode: 0,
+              stdout: '',
+              stderr: '',
+              durationMs: 0,
+            }
+          : failure(step, 'permanent', 'postcondition failed')
+      } catch (error) {
+        outcome = failure(step, 'permanent', (error as Error).message)
+      }
+      outcomes.push(outcome)
+      options.onStep?.({ type: 'finish', stepId: step.stepId, outcome })
+      if (outcome.status !== 'succeeded') {
+        return {
+          planId: plan.planId,
+          status: 'failed',
+          steps: outcomes,
+          failedStep: step.stepId,
+          errorClass: outcome.errorClass ?? 'permanent',
+          error: outcome.message,
+        }
+      }
+      completed.add(step.stepId)
+      saveCompleted(options.stateDir, plan.planId, completed, now())
+      continue
     }
 
     if (step.argv === undefined) {

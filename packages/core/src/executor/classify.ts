@@ -38,6 +38,8 @@ const TRANSIENT_SIGNATURES: readonly RegExp[] = [
   /connection reset/i,
   /too many clients/i,
   /Too many open files/i,
+  // Used by the PITR promotion probe: still in recovery forces 1/0.
+  /division by zero/i,
 ]
 
 const PERMANENT_SIGNATURES: readonly RegExp[] = [

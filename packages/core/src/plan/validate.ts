@@ -124,6 +124,25 @@ export function validatePlan(plan: Plan, ctx: PlanValidationContext): PlanValida
       }
     })
 
+    const needsFile = step.kind === 'write-file'
+    if (needsFile) {
+      if (!step.file) {
+        add('SCHEMA', `${base}.file`, `is required for kind "${step.kind}"`)
+      } else {
+        if (!nonEmpty(step.file.path)) add('SCHEMA', `${base}.file.path`, 'must be a non-empty string')
+        if (typeof step.file.content !== 'string') {
+          add('SCHEMA', `${base}.file.content`, 'must be a string')
+        }
+        if (step.file.mode !== undefined) {
+          if (!Number.isInteger(step.file.mode) || step.file.mode < 0 || step.file.mode > 0o777) {
+            add('SCHEMA', `${base}.file.mode`, 'must be an integer between 0 and 0o777')
+          }
+        }
+      }
+    } else if (step.file !== undefined) {
+      add('SCHEMA', `${base}.file`, `is forbidden for kind "${step.kind}"`)
+    }
+
     step.dependsOn.forEach((dependency, depIndex) => {
       if (!nonEmpty(dependency)) {
         add('SCHEMA', `${base}.dependsOn[${depIndex}]`, 'must be a non-empty string')

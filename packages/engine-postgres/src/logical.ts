@@ -36,7 +36,7 @@ export function targetIdFor(connection: ConnectionParams, database: string): str
   return `${connection.host}:${connection.port}/${database}`
 }
 
-function fingerprintFor(
+export function fingerprintFor(
   connection: ConnectionParams,
   ctx: PlanBuildContext,
 ): PlanFingerprint {

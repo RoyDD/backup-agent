@@ -9,8 +9,9 @@ P0 骨架、P0.5 故障模式目录、P1 逻辑备份与恢复均已完成：
 - P0：领域模型、Plan IR 校验/指纹/重基、`Executor` 端口与本地实现、SQLite 控制库（Outbox / 租约与 fencing / 对账）、`bkagent inspect`。
 - P0.5：57 条故障目录、15 条本地复现、错误分类与预检规则（`docs/failure-catalog.md`）。
 - P1：`pg_dump` / `psql` 逻辑备份与恢复、Step DAG 执行器、恢复校验（临时库行数比对）、`bkagent backup|restore|verify`。
+- P2：`pg_basebackup` 物理备份、`pg_verifybackup` 完整性校验、PITR 计划（配置写入、恢复启动、promote 断言）、`bkagent backup --mode physical` 与 `bkagent pitr`。
 
-P2（物理备份与 PITR）尚未开始。
+P3（pgBackRest / WAL-G）尚未开始。
 
 ## 结构
 
@@ -27,6 +28,7 @@ packages/
   engine-postgres/      @backup-agent/engine-postgres
     src/probe.ts        实例探测
     src/logical.ts      pg_dump / pg_restore 计划构建
+    src/physical.ts     pg_basebackup 与 PITR 计划构建
     src/verify.ts       恢复校验与行数比对
   cli/                  @backup-agent/cli（bkagent）
 ```
@@ -41,6 +43,9 @@ pnpm bkagent inspect --dsn 'postgres://user:pass@127.0.0.1:5432/postgres' --form
 pnpm bkagent backup  --dsn '...' --database app --out /backups/app.dump --format custom
 pnpm bkagent restore --dsn '...' --input /backups/app.dump --database app_restored --create-database --yes
 pnpm bkagent verify  --dsn '...' --input /backups/app.dump
+pnpm bkagent backup  --dsn '...' --mode physical --out /backups/base --format plain
+pnpm bkagent pitr    --dsn '...' --data-dir /restore --port 55417 --log /tmp/rec.log \
+                     --restore-command 'cp /archive/%f %p' --target-time '2026-01-01 00:00:00+00' --yes
 ```
 
 `inspect` 通过 `psql` 读取实例信息；`restore` 在建库或 `--clean` 时属破坏性操作，须显式 `--yes`。凭据仅经子进程环境变量传递，不出现在 argv 或输出中。

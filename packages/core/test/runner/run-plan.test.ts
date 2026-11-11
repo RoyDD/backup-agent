@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -164,6 +164,30 @@ describe('runPlan', () => {
       })
       const result = await runPlan(plan, { executor, cwd: dir, sleep })
       expect(result.status).toBe('succeeded')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('writes files for write-file steps', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bk-write-'))
+    try {
+      const path = join(dir, 'recovery.conf')
+      const plan = makePlan({
+        steps: [
+          step({
+            stepId: 'write',
+            kind: 'write-file',
+            argv: undefined,
+            file: { path, content: 'restore_command = \'cp /w/%f %p\'\n', mode: 0o600 },
+            idempotencyKey: 'write',
+          }),
+        ],
+      })
+      const result = await runPlan(plan, { executor: new FakeExecutor(), sleep })
+      expect(result.status).toBe('succeeded')
+      expect(readFileSync(path, 'utf8')).toContain('restore_command')
+      expect(statSync(path).mode & 0o777).toBe(0o600)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
