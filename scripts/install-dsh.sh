@@ -23,6 +23,11 @@ echo "Building the bkagent bundles..."
 pnpm --dir "$REPO" build:cli
 pnpm --dir "$REPO" build:knowledge
 
+if [ ! -f "$REPO/var/knowledge.sqlite" ]; then
+  echo "Building the knowledge index..."
+  (cd "$REPO" && pnpm --filter @backup-agent/knowledge index)
+fi
+
 echo "Installing preset to $PRESET_DIR"
 mkdir -p "$(dirname "$PRESET_DIR")"
 rm -rf "$PRESET_DIR"

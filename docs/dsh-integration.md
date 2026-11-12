@@ -71,5 +71,5 @@ console.log(info.serverVersionNum)
 
 - 不在插件内执行 SQL 或拼接 Shell 字符串。
 - Preset 与技能随目录复制，不修改 dsh 自带的 preset。
-- `kb_search` 依赖 `dist/bkagent-knowledge.mjs` 与 `var/knowledge.sqlite`；先运行 `pnpm --filter @backup-agent/knowledge index`。
+- `kb_search` 依赖 `dist/bkagent-knowledge.mjs` 与 `var/knowledge.sqlite`；`install-dsh.sh` 在索引缺失时会自动运行 `pnpm --filter @backup-agent/knowledge index`，也可手动重建。
 - 插件只依赖 `@deepseek-ai/dsh-tools`；dsh 运行时提供 `ctx.tools` 与 `ctx.approval`。
