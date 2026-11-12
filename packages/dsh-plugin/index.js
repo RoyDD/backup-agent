@@ -80,7 +80,7 @@ export function createHandlers(run, knowledgeRun = run) {
       if (args.mode !== undefined) argv.push('--mode', args.mode)
       if (args.format !== undefined) argv.push('--format', args.format)
       if (args.jobs !== undefined) argv.push('--jobs', String(args.jobs))
-      if (args.db !== undefined) argv.push('--db', args.db)
+      argv.push('--db', args.db ?? defaultDb())
       return parseCliResult(await run(argv))
     },
 
