@@ -7,13 +7,18 @@
   "exports": {
     ".": "./index.js"
   },
+  "bin": {
+    "bkagent-mcp": "./mcp.js"
+  },
   "files": [
-    "index.js"
+    "index.js",
+    "mcp.js",
+    "tools.js"
   ],
   "dependencies": {
     "@deepseek-ai/dsh-tools": "0.1.2-rc.1"
   },
   "scripts": {
-    "typecheck": "echo 'plain ESM plugin: no typecheck'"
+    "typecheck": "node --check index.js && node --check tools.js && node --check mcp.js"
   }
 }

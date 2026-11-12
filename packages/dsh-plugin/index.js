@@ -1,31 +1,40 @@
 import { spawn } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
 
+import {
+  DEFAULT_CLI,
+  DEFAULT_KNOWLEDGE_CLI,
+  TOOL_DEFINITIONS,
+  defaultDb,
+  findToolDefinition,
+} from './tools.js'
+
 /**
  * Cordis plugin exposing the backup-agent CLI as typed dsh tools.
- * Every tool is a thin adapter: argv is built here, execution and policy stay
- * in the control plane (`bkagent`). No SQL or shell string is accepted.
+ * Every tool is a thin adapter: argv is built in `tools.js` (ADR-008: the same
+ * definitions feed the MCP server), execution and policy stay in the control
+ * plane (`bkagent`). No SQL or shell string is accepted.
  */
 export const name = 'backup-agent-tools'
 export const inject = ['tools']
 
-const DEFAULT_CLI = fileURLToPath(new URL('../../dist/bkagent.mjs', import.meta.url))
-const DEFAULT_KNOWLEDGE_CLI = fileURLToPath(
-  new URL('../../dist/bkagent-knowledge.mjs', import.meta.url),
-)
-const DEFAULT_KNOWLEDGE_DB = fileURLToPath(
-  new URL('../../var/knowledge.sqlite', import.meta.url),
-)
+const DEFAULT_APPROVAL_REASON = '该工具会修改目标实例或数据目录，执行前须经审批'
+
+export { defaultDb }
 
 export function createRunner(options = {}) {
   const cliPath = options.cliPath ?? process.env.BKAGENT_CLI ?? DEFAULT_CLI
-  return async function run(args, env = {}) {
+  /**
+   * `signal` comes from the tool exec context: a cancelled tool call must kill
+   * the backend process, not leave a backup running with nobody waiting.
+   */
+  return async function run(args, env = {}, signal) {
     return await new Promise((resolve, reject) => {
       const child = spawn(process.execPath, [cliPath, ...args], {
         env: { ...process.env, ...env },
         stdio: ['ignore', 'pipe', 'pipe'],
+        ...(signal === undefined ? {} : { signal }),
       })
       let stdout = ''
       let stderr = ''
@@ -64,67 +73,15 @@ export function parseCliResult(result) {
   }
 }
 
-function defaultDb() {
-  return process.env.BKAGENT_DB ?? '.bkagent/control.db'
-}
-
+/** Map one shared definition onto the dsh runtime, one method per tool. */
 export function createHandlers(run, knowledgeRun = run) {
-  return {
-    async inspect(args) {
-      return parseCliResult(await run(['inspect', '--dsn', args.dsn, '--format', 'json']))
-    },
-
-    async backup(args) {
-      const argv = ['backup', '--dsn', args.dsn, '--out', args.out]
-      if (args.database !== undefined) argv.push('--database', args.database)
-      if (args.mode !== undefined) argv.push('--mode', args.mode)
-      if (args.format !== undefined) argv.push('--format', args.format)
-      if (args.jobs !== undefined) argv.push('--jobs', String(args.jobs))
-      argv.push('--db', args.db ?? defaultDb())
-      return parseCliResult(await run(argv))
-    },
-
-    async restore(args) {
-      const argv = ['restore', '--dsn', args.dsn, '--input', args.input, '--yes']
-      if (args.database !== undefined) argv.push('--database', args.database)
-      if (args.format !== undefined) argv.push('--format', args.format)
-      if (args.createDatabase === true) argv.push('--create-database')
-      if (args.clean === true) argv.push('--clean')
-      if (args.noOwner === true) argv.push('--no-owner')
-      argv.push('--db', args.db ?? defaultDb())
-      return parseCliResult(await run(argv))
-    },
-
-    async verify(args) {
-      const argv = ['verify', '--dsn', args.dsn, '--input', args.input]
-      if (args.database !== undefined) argv.push('--database', args.database)
-      if (args.format !== undefined) argv.push('--format', args.format)
-      return parseCliResult(await run(argv))
-    },
-
-    async catalog(args) {
-      const argv = ['catalog', '--db', args.db ?? defaultDb(), '--format', 'json']
-      if (args.target !== undefined) argv.push('--target', args.target)
-      if (args.limit !== undefined) argv.push('--limit', String(args.limit))
-      return parseCliResult(await run(argv))
-    },
-
-    async report(args) {
-      const argv = ['report', '--db', args.db ?? defaultDb(), '--format', 'json']
-      if (args.since !== undefined) argv.push('--since', args.since)
-      return parseCliResult(await run(argv))
-    },
-
-    async kbSearch(args) {
-      const argv = ['ask', args.query, '--json']
-      if (args.k !== undefined) argv.push('--k', String(args.k))
-      argv.push(
-        '--db',
-        args.db ?? process.env.BK_KNOWLEDGE_DB ?? DEFAULT_KNOWLEDGE_DB,
-      )
-      return parseCliResult(await knowledgeRun(argv))
-    },
+  const handlers = {}
+  for (const definition of TOOL_DEFINITIONS) {
+    const execute = definition.cli === 'knowledge' ? knowledgeRun : run
+    handlers[definition.method] = async (args, exec) =>
+      parseCliResult(await execute(definition.buildArgv(args), {}, exec?.signal))
   }
+  return handlers
 }
 
 /**
@@ -152,24 +109,43 @@ export async function requireApproval(ctx, exec, toolName, reason) {
   }
 }
 
-/** Every logical restore input may contain destructive SQL, regardless of flags. */
-export function createRestoreToolHandler(ctx, restore) {
+/** Wrap any handler behind the approval seam for its definition. */
+export function createApprovalToolHandler(ctx, definition, execute) {
   return async (args, exec) => {
     await requireApproval(
       ctx,
       exec,
-      'pg_restore',
-      '所有逻辑恢复输入都可能包含 DROP 等破坏性 SQL',
+      definition.name,
+      definition.approvalReason ?? DEFAULT_APPROVAL_REASON,
     )
-    return restore(args)
+    return execute(args, exec)
   }
 }
 
-function textTool(toolName, description, parameters, execute) {
+/** Kept for existing callers and tests; a thin wrapper over the generic seam. */
+export function createRestoreToolHandler(ctx, restore) {
+  return createApprovalToolHandler(ctx, findToolDefinition('pg_restore'), restore)
+}
+
+/** JSON Schema (shared with MCP) -> dsh per-property parameter DSL. */
+export function toParameterSchema(inputSchema) {
+  const required = new Set(inputSchema.required ?? [])
+  const parameters = {}
+  for (const [key, property] of Object.entries(inputSchema.properties ?? {})) {
+    const spec = { type: property.type }
+    if (property.description !== undefined) spec.description = property.description
+    if (property.enum !== undefined) spec.enum = property.enum
+    if (required.has(key)) spec.required = true
+    parameters[key] = spec
+  }
+  return parameters
+}
+
+function textTool(definition, execute) {
   return defineTool({
-    name: toolName,
-    description,
-    parameters,
+    name: definition.name,
+    description: definition.description,
+    parameters: toParameterSchema(definition.inputSchema),
     output: {
       schema: { type: 'string' },
       render: (_args, value) => [{ type: 'text', text: value }],
@@ -186,99 +162,15 @@ export function apply(ctx) {
   const knowledgeRun = createKnowledgeRunner()
   const handlers = createHandlers(run, knowledgeRun)
 
-  ctx.tools.register(
-    textTool(
-      'pg_inspect',
-      '只读：读取 PostgreSQL 实例版本、角色、WAL、归档与数据库清单。',
-      { dsn: { type: 'string', required: true, description: 'postgres:// URI' } },
-      (args) => handlers.inspect(args),
-    ),
-  )
-
-  ctx.tools.register(
-    textTool(
-      'pg_backup',
-      '对 PostgreSQL 执行逻辑或物理备份。只读操作，不修改数据库。',
-      {
-        dsn: { type: 'string', required: true, description: 'postgres:// URI' },
-        out: { type: 'string', required: true, description: '产物路径' },
-        database: { type: 'string', description: '目标数据库' },
-        mode: { type: 'string', description: 'logical 或 physical' },
-        format: { type: 'string', description: 'custom|directory|plain|tar' },
-        jobs: { type: 'number', description: '并行度（仅 directory）' },
-        db: { type: 'string', description: '控制库路径' },
-      },
-      (args) => handlers.backup(args),
-    ),
-  )
-
-  ctx.tools.register(
-    textTool(
-      'pg_restore',
-      '恢复逻辑备份到目标数据库。所有恢复输入都可能包含破坏性 SQL，执行前须经审批。',
-      {
-        dsn: { type: 'string', required: true, description: 'postgres:// URI' },
-        input: { type: 'string', required: true, description: '备份路径' },
-        database: { type: 'string', description: '目标数据库' },
-        format: { type: 'string', description: 'custom|directory|plain' },
-        createDatabase: { type: 'boolean', description: '先创建数据库' },
-        clean: { type: 'boolean', description: '恢复前清理对象' },
-        noOwner: { type: 'boolean', description: '不恢复属主' },
-        db: { type: 'string', description: '控制库路径' },
-      },
-      createRestoreToolHandler(ctx, handlers.restore),
-    ),
-  )
-
-  ctx.tools.register(
-    textTool(
-      'pg_verify',
-      '将逻辑备份恢复到临时库并比对各表行数，返回一致性报告。',
-      {
-        dsn: { type: 'string', required: true, description: 'postgres:// URI' },
-        input: { type: 'string', required: true, description: '备份路径' },
-        database: { type: 'string', description: '源数据库' },
-        format: { type: 'string', description: 'custom|directory|plain' },
-      },
-      (args) => handlers.verify(args),
-    ),
-  )
-
-  ctx.tools.register(
-    textTool(
-      'pg_catalog',
-      '只读：列出控制库中的备份产物清单。',
-      {
-        db: { type: 'string', description: '控制库路径' },
-        target: { type: 'string', description: '目标过滤' },
-        limit: { type: 'number', description: '返回条数上限' },
-      },
-      (args) => handlers.catalog(args),
-    ),
-  )
-
-  ctx.tools.register(
-    textTool(
-      'kb_search',
-      '只读：在 PostgreSQL 备份恢复证据库（SAG2）中检索原文段落，返回 source#ordinal、标题路径与得分。只返回证据，不生成结论。',
-      {
-        query: { type: 'string', required: true, description: '检索问题' },
-        k: { type: 'number', description: '返回条数，默认 5' },
-        db: { type: 'string', description: '知识索引路径' },
-      },
-      (args) => handlers.kbSearch(args),
-    ),
-  )
-
-  ctx.tools.register(
-    textTool(
-      'pg_report',
-      '只读：生成指定时间窗口的备份运行报表（JSON）。',
-      {
-        db: { type: 'string', description: '控制库路径' },
-        since: { type: 'string', description: 'ISO 时间或 Nd，例如 7d' },
-      },
-      (args) => handlers.report(args),
-    ),
-  )
+  for (const definition of TOOL_DEFINITIONS) {
+    const handler = handlers[definition.method]
+    ctx.tools.register(
+      textTool(
+        definition,
+        definition.requiresApproval === true
+          ? createApprovalToolHandler(ctx, definition, handler)
+          : handler,
+      ),
+    )
+  }
 }
