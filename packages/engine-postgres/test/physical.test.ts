@@ -14,6 +14,7 @@ import type { Plan, Step } from '@backup-agent/core'
 import {
   buildPhysicalBackupArgv,
   buildPhysicalBackupPlan,
+  buildPhysicalVerifyPlan,
   buildPitrConfig,
   buildPitrRestorePlan,
 } from '../src/physical'
@@ -82,6 +83,7 @@ describe('buildPhysicalBackupPlan', () => {
     expect(plan.provider).toBe('native-physical')
     expect(plan.steps.map((step) => step.stepId)).toEqual(['basebackup', 'verify-backup'])
     expect(plan.steps[1]?.dependsOn).toEqual(['basebackup'])
+    expect(plan.requires).toEqual({ capabilities: ['physical'] })
   })
 
   it('skips verification for tar archives', () => {
@@ -120,7 +122,7 @@ const pitrBase = {
 
 const validationContext: PlanValidationContext = {
   now: '2026-01-01T00:30:00.000Z',
-  declaredCapabilities: new Set<Capability>(['physical', 'pitr']),
+  declaredCapabilities: new Set<Capability>(['physical', 'pitr', 'verify-restore']),
   requiredCapabilities: [],
   mandate: {
     id: asMandateId('mnd_1'),
@@ -140,6 +142,13 @@ function lastArgv(step: { argv?: readonly string[] } | undefined): string {
   return step?.argv?.[step.argv.length - 1] ?? ''
 }
 
+/** The SSH transport a remote target would carry; Plans must record it. */
+const sshTransport = {
+  kind: 'ssh',
+  host: 'dba@db1.internal',
+  knownHostsFile: '/etc/backup-agent/known_hosts',
+} as const
+
 function stepById(plan: Plan, stepId: string): Step | undefined {
   return plan.steps.find((step) => step.stepId === stepId)
 }
@@ -156,6 +165,7 @@ describe('buildPitrRestorePlan', () => {
       ctx,
     )
     expect(plan.risk).toBe('destructive')
+    expect(plan.requires).toEqual({ capabilities: ['physical', 'pitr'] })
     expect(plan.steps.map((step) => step.stepId)).toEqual([
       'write-recovery-config',
       'write-recovery-signal',
@@ -243,6 +253,18 @@ describe('buildPitrRestorePlan', () => {
     expect(plan.steps.find((step) => step.stepId === 'start-instance')?.preconditions).toEqual([
       { kind: 'pathAbsent', path: '/tmp/rec/postmaster.pid' },
     ])
+  })
+
+  it('estimates the local data directory write from the probed data size', () => {
+    const sized = { ...ctx, instance: { ...ctx.instance, dataBytes: 42_000 } }
+    const pitr = buildPitrRestorePlan({ ...pitrBase, target: { name: 'before-drop' } }, sized)
+    expect(pitr.resources.estimatedBytes).toBe(42_000)
+
+    const backup = buildPhysicalBackupPlan(
+      { connection, outputPath: '/backups/base', format: 'plain' },
+      sized,
+    )
+    expect(backup.resources.estimatedBytes).toBe(42_000)
   })
 
   it('checks a time target and avoids shell metacharacters in the assertion', () => {
@@ -353,6 +375,32 @@ describe('buildPitrRestorePlan', () => {
         ctx,
       )
       expect(validatePlan(plan, validationContext)).toEqual([])
+    }
+  })
+})
+
+describe('Plan transport', () => {
+  function plansWith(context: PlanBuildContext): Plan[] {
+    return [
+      buildPhysicalBackupPlan(
+        { connection, outputPath: '/backups/base', format: 'plain' },
+        context,
+      ),
+      buildPitrRestorePlan({ ...pitrBase, target: { name: 'before-drop' } }, context),
+      buildPhysicalVerifyPlan({ connection, outputPath: '/backups/base' }, context),
+    ]
+  }
+
+  it('records the ssh transport on every plan and still validates', () => {
+    for (const plan of plansWith({ ...ctx, transport: sshTransport })) {
+      expect(plan.transport).toEqual(sshTransport)
+      expect(validatePlan(plan, validationContext)).toEqual([])
+    }
+  })
+
+  it('leaves transport undefined for a context that does not carry one', () => {
+    for (const plan of plansWith(ctx)) {
+      expect(plan.transport).toBeUndefined()
     }
   })
 })

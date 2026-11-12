@@ -3,13 +3,29 @@ import {
   asTargetId,
   DEFAULT_RETRY_POLICY,
   newId,
+  preflightProvider,
+  unsupportedOperation,
   type ConnectionParams,
+  type Capability,
   type Plan,
   type PlanBuildContext,
+  type ProviderAdapter,
+  type ProviderDescriptor,
   type Step,
 } from '@backup-agent/core'
 
+import { POSTGRES_ENGINE_DESCRIPTOR, PSQL_TOOL } from './descriptor'
 import { fingerprintFor, targetIdFor } from './logical'
+import { probePostgres } from './probe'
+
+/** Capabilities every native physical base backup needs from its provider. */
+const PHYSICAL_CAPABILITIES: readonly Capability[] = ['physical']
+
+/** Recovery walks the WAL archive, so a PITR Plan needs both capabilities. */
+const PITR_CAPABILITIES: readonly Capability[] = ['physical', 'pitr']
+
+/** `pg_verifybackup` reads the backup manifest and, optionally, its WAL. */
+const VERIFY_CAPABILITIES: readonly Capability[] = ['physical', 'verify-restore']
 
 export interface PhysicalBackupRequest {
   connection: ConnectionParams
@@ -85,10 +101,18 @@ export function buildPhysicalBackupPlan(
     mandateId: ctx.mandateId,
     engine: 'postgres',
     provider: 'native-physical',
+    ...(ctx.transport === undefined ? {} : { transport: ctx.transport }),
     targetId: asTargetId(targetIdFor(request.connection, request.connection.database)),
     fingerprint: fingerprintFor(request.connection, ctx),
     steps,
-    resources: { estimatedBytes: 0, estimatedDurationMs: 0, concurrencySlots: 1 },
+    // The base backup lands on the control plane's filesystem, so the instance's
+    // total data size bounds the local write it needs.
+    resources: {
+      estimatedBytes: ctx.instance.dataBytes ?? 0,
+      estimatedDurationMs: 0,
+      concurrencySlots: 1,
+    },
+    requires: { capabilities: PHYSICAL_CAPABILITIES },
     risk: 'read-only',
   }
 }
@@ -456,6 +480,7 @@ export function buildPitrRestorePlan(request: PitrRestoreRequest, ctx: PlanBuild
     mandateId: ctx.mandateId,
     engine: 'postgres',
     provider: 'native-physical',
+    ...(ctx.transport === undefined ? {} : { transport: ctx.transport }),
     targetId: asTargetId(`pitr:${request.dataDirectory}`),
     fingerprint: fingerprintFor(request.connection, ctx),
     steps,
@@ -489,7 +514,153 @@ export function buildPitrRestorePlan(request: PitrRestoreRequest, ctx: PlanBuild
         timeoutMs: 30_000,
       },
     ],
-    resources: { estimatedBytes: 0, estimatedDurationMs: 0, concurrencySlots: 1 },
+    resources: {
+      // PITR writes a full data directory locally before replaying WAL.
+      estimatedBytes: ctx.instance.dataBytes ?? 0,
+      estimatedDurationMs: 0,
+      concurrencySlots: 1,
+    },
+    requires: { capabilities: PITR_CAPABILITIES },
     risk: 'destructive',
   }
+}
+
+export interface PhysicalVerifyRequest {
+  connection: ConnectionParams
+  outputPath: string
+  /**
+   * Parse the backup's WAL while verifying. Off by default: parsing needs
+   * `pg_waldump` beside `pg_verifybackup`, and its absence must not turn a
+   * manifest check into an unexplained failure.
+   */
+  parseWal?: boolean
+}
+
+/** §11 provider requests for the native physical adapter. */
+export interface PhysicalProviderRequests {
+  backup: PhysicalBackupRequest
+  restore: PitrRestoreRequest
+  verify: PhysicalVerifyRequest
+  prune: unknown
+  catalog: unknown
+}
+
+/**
+ * Verifies an existing base backup directory from its manifest. The step only
+ * reads the backup, so the plan is `reversible`: a failed manifest check leaves
+ * the directory untouched but does not prove the backup is restorable.
+ */
+export function buildPhysicalVerifyPlan(
+  request: PhysicalVerifyRequest,
+  ctx: PlanBuildContext,
+): Plan {
+  return {
+    planId: asPlanId(newId('pln')),
+    ticketId: ctx.ticketId,
+    mandateId: ctx.mandateId,
+    engine: 'postgres',
+    provider: 'native-physical',
+    ...(ctx.transport === undefined ? {} : { transport: ctx.transport }),
+    targetId: asTargetId(`verify:${request.outputPath}`),
+    fingerprint: fingerprintFor(request.connection, ctx),
+    steps: [
+      {
+        stepId: 'verify-backup',
+        kind: 'exec',
+        dependsOn: [],
+        argv: [
+          'pg_verifybackup',
+          ...(request.parseWal === true ? [] : ['--no-parse-wal']),
+          request.outputPath,
+        ],
+        preconditions: [],
+        postconditions: [],
+        retry: DEFAULT_RETRY_POLICY,
+        checkpoint: 'after',
+        idempotencyKey: `physical-verify-backup:${ctx.configDigest}`,
+        timeoutMs: 600_000,
+      },
+    ],
+    resources: { estimatedBytes: 0, estimatedDurationMs: 0, concurrencySlots: 1 },
+    requires: { capabilities: VERIFY_CAPABILITIES },
+    risk: 'reversible',
+  }
+}
+
+export const NATIVE_PHYSICAL_PROVIDER_DESCRIPTOR: ProviderDescriptor = {
+  id: 'native-physical',
+  engineId: POSTGRES_ENGINE_DESCRIPTOR.id,
+  capabilities: new Set(['physical', 'pitr', 'verify-restore']),
+  // The base backup is a directory on the control plane's filesystem.
+  ownership: 'managed',
+  versionRange: { min: '14', max: '17' },
+  tools: [
+    PSQL_TOOL,
+    { name: 'pg_basebackup', minVersion: '14', probe: 'version' },
+    // pg_verifybackup shipped in PostgreSQL 13; the server range still binds.
+    { name: 'pg_verifybackup', minVersion: '13', probe: 'version' },
+  ],
+}
+
+/**
+ * The §11 adapter for `pg_basebackup`/`pg_verifybackup` and native PITR. As with
+ * the logical adapter it adds no argv: `backup` and `restore` delegate to the
+ * builders above, and `plan()` only dispatches.
+ *
+ * Catalog enumeration and prune are typed refusals. A native base-backup
+ * directory has no provider-maintained index or retention command; deleting it
+ * is the operator's filesystem decision and must never be inferred here.
+ */
+export const nativePhysicalProvider: ProviderAdapter<PhysicalProviderRequests> = {
+  descriptor: NATIVE_PHYSICAL_PROVIDER_DESCRIPTOR,
+
+  inspect(executor, connection) {
+    return probePostgres(executor, connection)
+  },
+
+  preflight(executor, _request, context) {
+    return preflightProvider({
+      executor,
+      descriptor: NATIVE_PHYSICAL_PROVIDER_DESCRIPTOR,
+      engine: POSTGRES_ENGINE_DESCRIPTOR,
+      instance: context.instance,
+    })
+  },
+
+  plan(operation, request, context) {
+    switch (operation) {
+      case 'backup':
+        return buildPhysicalBackupPlan(request as PhysicalBackupRequest, context)
+      case 'restore':
+        return buildPitrRestorePlan(request as PitrRestoreRequest, context)
+      case 'verify':
+        return buildPhysicalVerifyPlan(request as PhysicalVerifyRequest, context)
+      case 'prune':
+        return unsupportedOperation('prune', NATIVE_PHYSICAL_PROVIDER_DESCRIPTOR.id)
+      default: {
+        const exhaustive: never = operation
+        throw new Error(`unhandled operation: ${String(exhaustive)}`)
+      }
+    }
+  },
+
+  backup(request, context) {
+    return buildPhysicalBackupPlan(request, context)
+  },
+
+  restore(request, context) {
+    return buildPitrRestorePlan(request, context)
+  },
+
+  verify(request, context) {
+    return buildPhysicalVerifyPlan(request, context)
+  },
+
+  prune() {
+    return unsupportedOperation('prune', NATIVE_PHYSICAL_PROVIDER_DESCRIPTOR.id)
+  },
+
+  catalog(): never {
+    return unsupportedOperation('catalog', NATIVE_PHYSICAL_PROVIDER_DESCRIPTOR.id)
+  },
 }

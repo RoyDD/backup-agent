@@ -1,10 +1,19 @@
 import { describe, expect, it } from 'vitest'
 
-import { asMandateId, asTicketId, parseDsn, type PlanBuildContext } from '@backup-agent/core'
+import {
+  asMandateId,
+  asTicketId,
+  parseDsn,
+  validatePlan,
+  type Capability,
+  type PlanBuildContext,
+  type PlanValidationContext,
+} from '@backup-agent/core'
 import {
   buildBackupArgv,
   buildLogicalBackupPlan,
   buildLogicalRestorePlan,
+  buildLogicalVerifyPlan,
   buildRestoreArgv,
   requestDigest,
 } from '../src/logical'
@@ -30,6 +39,40 @@ const ctx: PlanBuildContext = {
     warnings: [],
   },
   configDigest: 'cfg-1',
+}
+
+/**
+ * The SSH transport a remote target would carry. Plans must record it so the
+ * execution seam can pick the executor from the Plan rather than a process
+ * default.
+ */
+const sshTransport = {
+  kind: 'ssh',
+  host: 'dba@db1.internal',
+  knownHostsFile: '/etc/backup-agent/known_hosts',
+} as const
+
+const validationContext: PlanValidationContext = {
+  now: '2026-01-01T00:30:00.000Z',
+  declaredCapabilities: new Set<Capability>([
+    'logical',
+    'verify-restore',
+    'physical',
+    'pitr',
+  ]),
+  requiredCapabilities: [],
+  mandate: {
+    id: asMandateId('mnd_1'),
+    ticketId: asTicketId('tkt_1'),
+    principalId: 'user:roy',
+    scope: 'restore',
+    policyVersion: '1',
+    allowedRisk: 'destructive',
+    issuedAt: '2026-01-01T00:00:00.000Z',
+    expiresAt: '2026-01-01T03:00:00.000Z',
+  },
+  resources: { availableBytes: 1_000_000, maxConcurrency: 4 },
+  policyValid: true,
 }
 
 describe('buildBackupArgv', () => {
@@ -88,6 +131,26 @@ describe('buildLogicalBackupPlan', () => {
     expect(plan.fingerprint.targetOid).toBe('16384')
     expect(plan.steps.map((step) => step.stepId)).toEqual(['dump', 'verify-artifact'])
     expect(plan.steps[1]?.dependsOn).toEqual(['dump'])
+    expect(plan.requires).toEqual({ capabilities: ['logical'] })
+    // The fixture instance reports no data size, so the estimate stays unknown.
+    expect(plan.resources.estimatedBytes).toBe(0)
+  })
+
+  it('estimates local bytes from the probed data size', () => {
+    const sized = { ...ctx, instance: { ...ctx.instance, dataBytes: 12_345 } }
+    const backup = buildLogicalBackupPlan(
+      { connection, database: 'app', outputPath: '/tmp/app.dump', format: 'custom' },
+      sized,
+    )
+    expect(backup.resources.estimatedBytes).toBe(12_345)
+
+    // A restore reads its input on the database host and writes nothing locally.
+    const restore = buildLogicalRestorePlan(
+      { connection, inputPath: '/tmp/app.dump', format: 'custom', database: 'app' },
+      sized,
+    )
+    expect(restore.resources.estimatedBytes).toBe(0)
+    expect(restore.requires).toEqual({ capabilities: ['logical'] })
   })
 
   it('skips artifact verification for plain format', () => {
@@ -161,6 +224,38 @@ describe('buildLogicalRestorePlan', () => {
       ctx,
     )
     expect(plan.risk).toBe('destructive')
+  })
+})
+
+describe('Plan transport', () => {
+  function plansWith(context: PlanBuildContext) {
+    return [
+      buildLogicalBackupPlan(
+        { connection, database: 'app', outputPath: '/tmp/app.dump', format: 'custom' },
+        context,
+      ),
+      buildLogicalRestorePlan(
+        { connection, inputPath: '/tmp/app.dump', format: 'custom', database: 'app' },
+        context,
+      ),
+      buildLogicalVerifyPlan(
+        { connection, inputPath: '/tmp/app.dump', format: 'custom' },
+        context,
+      ),
+    ]
+  }
+
+  it('records the ssh transport on every plan and still validates', () => {
+    for (const plan of plansWith({ ...ctx, transport: sshTransport })) {
+      expect(plan.transport).toEqual(sshTransport)
+      expect(validatePlan(plan, validationContext)).toEqual([])
+    }
+  })
+
+  it('leaves transport undefined for a context that does not carry one', () => {
+    for (const plan of plansWith(ctx)) {
+      expect(plan.transport).toBeUndefined()
+    }
   })
 })
 

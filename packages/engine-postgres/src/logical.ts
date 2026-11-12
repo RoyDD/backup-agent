@@ -6,14 +6,30 @@ import {
   canonicalJson,
   DEFAULT_RETRY_POLICY,
   newId,
+  preflightProvider,
+  ProviderOperationError,
+  unsupportedOperation,
   type ConnectionParams,
+  type Capability,
   type LogicalBackupRequest,
+  type LogicalFormat,
   type LogicalRestoreRequest,
   type Plan,
   type PlanBuildContext,
   type PlanFingerprint,
+  type ProviderAdapter,
+  type ProviderDescriptor,
   type Step,
 } from '@backup-agent/core'
+
+import { POSTGRES_ENGINE_DESCRIPTOR, PSQL_TOOL } from './descriptor'
+import { probePostgres } from './probe'
+
+/** Capabilities every native logical Plan needs from its provider. */
+const LOGICAL_CAPABILITIES: readonly Capability[] = ['logical']
+
+/** A dump verification reads the artifact and reports its TOC; no writes. */
+const VERIFY_CAPABILITIES: readonly Capability[] = ['logical', 'verify-restore']
 
 export function requestDigest(value: unknown): string {
   return createHash('sha256').update(canonicalJson(redactSecrets(value))).digest('hex')
@@ -163,10 +179,18 @@ export function buildLogicalBackupPlan(request: LogicalBackupRequest, ctx: PlanB
     mandateId: ctx.mandateId,
     engine: 'postgres',
     provider: 'native-logical',
+    ...(ctx.transport === undefined ? {} : { transport: ctx.transport }),
     targetId: asTargetId(targetIdFor(request.connection, request.database)),
     fingerprint: fingerprintFor(request.connection, ctx),
     steps,
-    resources: { estimatedBytes: 0, estimatedDurationMs: 0, concurrencySlots: 1 },
+    resources: {
+      estimatedBytes: ctx.instance.dataBytes ?? 0,
+      estimatedDurationMs: 0,
+      concurrencySlots: 1,
+    },
+    // The dump lands on the control plane's filesystem, so the instance's total
+    // data size bounds the local write it needs.
+    requires: { capabilities: LOGICAL_CAPABILITIES },
     risk: 'read-only',
   }
 }
@@ -209,13 +233,161 @@ export function buildLogicalRestorePlan(
     mandateId: ctx.mandateId,
     engine: 'postgres',
     provider: 'native-logical',
+    ...(ctx.transport === undefined ? {} : { transport: ctx.transport }),
     targetId: asTargetId(targetIdFor(request.connection, request.database)),
     fingerprint: fingerprintFor(request.connection, ctx),
     steps,
+    // The restore input is read on the database host; nothing is written locally.
     resources: { estimatedBytes: 0, estimatedDurationMs: 0, concurrencySlots: 1 },
+    requires: { capabilities: LOGICAL_CAPABILITIES },
     // Every restore writes into a database and can execute destructive SQL
     // from its input (e.g. pg_dump --clean or pg_dumpall). CLI flags alone do
     // not prove that the input is non-destructive or that the target is empty.
     risk: 'destructive',
   }
+}
+
+export interface LogicalVerifyRequest {
+  connection: ConnectionParams
+  inputPath: string
+  format: LogicalFormat
+  /** Accepted for parity with restore; listing a TOC never maps owners. */
+  noOwner?: boolean
+}
+
+/**
+ * Verifies a dump artifact by listing its table of contents. `pg_restore
+ * --list` reads the archive header and TOC only: it opens no connection and
+ * writes nothing, so the plan is `reversible` rather than `read-only` solely
+ * because it does not prove the dump is restorable.
+ *
+ * A plain SQL script has no archive header to list. Refusing it is a typed
+ * `INVALID_REQUEST`: replaying it into a scratch database would be a restore,
+ * not a verification, and must not be smuggled into a plan named "verify".
+ */
+export function buildLogicalVerifyPlan(
+  request: LogicalVerifyRequest,
+  ctx: PlanBuildContext,
+): Plan {
+  if (request.format === 'plain') {
+    throw new ProviderOperationError(
+      'INVALID_REQUEST',
+      'plain-format dumps have no table of contents to verify; take the dump with "custom" or "directory" format',
+    )
+  }
+
+  return {
+    planId: asPlanId(newId('pln')),
+    ticketId: ctx.ticketId,
+    mandateId: ctx.mandateId,
+    engine: 'postgres',
+    provider: 'native-logical',
+    ...(ctx.transport === undefined ? {} : { transport: ctx.transport }),
+    targetId: asTargetId(`verify:${targetIdFor(request.connection, request.connection.database)}`),
+    fingerprint: fingerprintFor(request.connection, ctx),
+    steps: [
+      {
+        stepId: 'verify-dump',
+        kind: 'exec',
+        dependsOn: [],
+        // No `--no-owner`: listing a TOC emits owner names as data and never
+        // applies them, so the flag would change nothing the artifact shows.
+        argv: ['pg_restore', '--list', request.inputPath],
+        preconditions: [],
+        postconditions: [],
+        retry: DEFAULT_RETRY_POLICY,
+        checkpoint: 'after',
+        idempotencyKey: `logical-verify-dump:${ctx.configDigest}`,
+      },
+    ],
+    resources: { estimatedBytes: 0, estimatedDurationMs: 0, concurrencySlots: 1 },
+    requires: { capabilities: VERIFY_CAPABILITIES },
+    risk: 'reversible',
+  }
+}
+
+/** §11 provider requests for the native logical adapter. */
+export interface LogicalProviderRequests {
+  backup: LogicalBackupRequest
+  restore: LogicalRestoreRequest
+  verify: LogicalVerifyRequest
+  prune: unknown
+  catalog: unknown
+}
+
+export const LOGICAL_PROVIDER_DESCRIPTOR: ProviderDescriptor = {
+  id: 'native-logical',
+  engineId: POSTGRES_ENGINE_DESCRIPTOR.id,
+  capabilities: new Set(['logical', 'verify-restore']),
+  // Dumps land on the control plane's filesystem, which the control plane owns.
+  ownership: 'managed',
+  versionRange: { min: '14', max: '17' },
+  tools: [
+    PSQL_TOOL,
+    { name: 'pg_dump', minVersion: '14', probe: 'version' },
+    { name: 'pg_restore', minVersion: '14', probe: 'version' },
+  ],
+}
+
+/**
+ * The §11 adapter for `pg_dump`/`pg_restore`. It carries no argv of its own: the
+ * builders above are the single source of step truth, and `plan()` exists only
+ * to dispatch to them.
+ *
+ * `prune` and `catalog` are typed refusals rather than no-ops: a dump repository
+ * has no provider-owned object index, so retention is the operator's filesystem
+ * policy and must not be invented here.
+ */
+export const logicalProvider: ProviderAdapter<LogicalProviderRequests> = {
+  descriptor: LOGICAL_PROVIDER_DESCRIPTOR,
+
+  inspect(executor, connection) {
+    return probePostgres(executor, connection)
+  },
+
+  preflight(executor, _request, context) {
+    return preflightProvider({
+      executor,
+      descriptor: LOGICAL_PROVIDER_DESCRIPTOR,
+      engine: POSTGRES_ENGINE_DESCRIPTOR,
+      instance: context.instance,
+    })
+  },
+
+  plan(operation, request, context) {
+    switch (operation) {
+      case 'backup':
+        return buildLogicalBackupPlan(request as LogicalBackupRequest, context)
+      case 'restore':
+        return buildLogicalRestorePlan(request as LogicalRestoreRequest, context)
+      case 'verify':
+        return buildLogicalVerifyPlan(request as LogicalVerifyRequest, context)
+      case 'prune':
+        return unsupportedOperation('prune', LOGICAL_PROVIDER_DESCRIPTOR.id)
+      default: {
+        const exhaustive: never = operation
+        throw new Error(`unhandled operation: ${String(exhaustive)}`)
+      }
+    }
+  },
+
+  backup(request, context) {
+    return buildLogicalBackupPlan(request, context)
+  },
+
+  restore(request, context) {
+    return buildLogicalRestorePlan(request, context)
+  },
+
+  verify(request, context) {
+    return buildLogicalVerifyPlan(request, context)
+  },
+
+  prune() {
+    return unsupportedOperation('prune', LOGICAL_PROVIDER_DESCRIPTOR.id)
+  },
+
+  catalog(): never {
+    return unsupportedOperation('catalog', LOGICAL_PROVIDER_DESCRIPTOR.id)
+  },
 }
