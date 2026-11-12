@@ -1,5 +1,5 @@
 import { postgresEngine } from '@backup-agent/engine-postgres'
-import type { ConnectionParams, Executor, InstanceInfo } from '@backup-agent/core'
+import type { ConnectionParams, Executor, InstanceInfo, ProbeOptions } from '@backup-agent/core'
 
 export { parseDsn, connectionEnv } from '@backup-agent/core'
 export type { ConnectionParams, InstanceInfo }
@@ -11,6 +11,7 @@ export type { ConnectionParams, InstanceInfo }
 export async function inspectInstance(
   executor: Executor,
   connection: ConnectionParams,
+  options?: ProbeOptions,
 ): Promise<InstanceInfo> {
-  return postgresEngine.probe(executor, connection)
+  return postgresEngine.probe(executor, connection, options)
 }

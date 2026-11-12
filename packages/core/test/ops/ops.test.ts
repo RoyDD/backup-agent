@@ -99,24 +99,111 @@ describe('buildOpsReport', () => {
 })
 
 describe('renderMetrics', () => {
+  const base = {
+    now: Date.parse('2026-02-01T00:00:00.000Z'),
+    artifacts: [
+      { provider: 'pgbackrest', kind: 'full', sizeBytes: 100, createdAt: '2026-01-31T00:00:00.000Z' },
+    ],
+    attempts: [
+      { state: 'failed', errorClass: 'transient' },
+      { state: 'succeeded' },
+    ],
+    outboxPending: 2,
+    ticketsByState: { open: 3, succeeded: 1 },
+    attemptsByState: { succeeded: 1, failed: 1, stalled: 1 },
+    attemptDurations: [
+      { state: 'succeeded', seconds: 12 },
+      { state: 'succeeded', seconds: 8 },
+      { state: 'failed', seconds: 5 },
+    ],
+    backupBytesByProvider: [{ provider: 'pgbackrest', bytes: 4_096 }],
+    verifyLevels: [
+      { level: 'V1', count: 2 },
+      { level: 'V2', count: 1 },
+    ],
+    outboxOldestPendingAt: '2026-01-31T23:59:30.000Z',
+    rpo: { assets: 4, withinRpo: 3 },
+  } as const
+
   it('renders Prometheus exposition', () => {
-    const text = renderMetrics({
-      now: Date.parse('2026-02-01T00:00:00.000Z'),
-      artifacts: [
-        { provider: 'pgbackrest', kind: 'full', sizeBytes: 100, createdAt: '2026-01-31T00:00:00.000Z' },
-      ],
-      attempts: [
-        { state: 'failed', errorClass: 'transient' },
-        { state: 'succeeded' },
-      ],
-      outboxPending: 2,
-      stalledAttempts: 1,
-    })
+    const text = renderMetrics(base)
+    // Pre-existing series keep their numbers and label sets.
     expect(text).toContain('bk_artifacts_total{provider="pgbackrest",kind="full"} 1')
     expect(text).toContain('bk_artifact_bytes_total{provider="pgbackrest"} 100')
+    expect(text).toContain('bk_attempts_total{state="succeeded"} 1')
     expect(text).toContain('bk_attempt_errors_total{error_class="transient"} 1')
     expect(text).toContain('bk_outbox_pending 2')
+    expect(text).toContain('bk_last_artifact_timestamp_seconds')
+
+    // §12 series.
+    expect(text).toContain('bk_ticket_total{state="open"} 3')
+    expect(text).toContain('bk_ticket_total{state="succeeded"} 1')
+    expect(text).toContain('bk_attempt_duration_seconds_sum{state="succeeded"} 20')
+    expect(text).toContain('bk_attempt_duration_seconds_count{state="succeeded"} 2')
+    expect(text).toContain('bk_attempt_duration_seconds_sum{state="failed"} 5')
+    expect(text).toContain('# TYPE bk_attempt_duration_seconds summary')
+    expect(text).toContain('bk_backup_bytes_total{provider="pgbackrest"} 4096')
+    expect(text).toContain('bk_verify_result_total{level="V1",result="ok"} 2')
+    expect(text).toContain('bk_verify_result_total{level="V2",result="ok"} 1')
+    expect(text).toContain('bk_outbox_lag_seconds 30')
     expect(text).toContain('bk_stalled_attempts_total 1')
+    expect(text).toContain('bk_rpo_attainment_ratio 0.750000')
+
+    // These *_total series are gauges, and their HELP admits non-monotonicity.
+    expect(text).toMatch(/# TYPE bk_ticket_total gauge/)
+    expect(text).toMatch(/# TYPE bk_backup_bytes_total gauge/)
+    expect(text).toMatch(/# TYPE bk_verify_result_total gauge/)
+    expect(text).toMatch(/# TYPE bk_attempts_total gauge/)
+    expect(text).toMatch(/# TYPE bk_artifacts_total gauge/)
+    expect(text).toContain('tombstones and retention do not decrement it')
+  })
+
+  it('skips duration samples for states with no finished attempt', () => {
+    const text = renderMetrics({ ...base, attemptDurations: [] })
+    expect(text).toContain('# TYPE bk_attempt_duration_seconds summary')
+    expect(text).not.toContain('bk_attempt_duration_seconds_sum{')
+    expect(text).not.toContain('bk_attempt_duration_seconds_count{')
+  })
+
+  it('reports zero outbox lag when nothing is pending', () => {
+    const text = renderMetrics({ ...base, outboxOldestPendingAt: null, outboxPending: 0 })
+    expect(text).toContain('bk_outbox_lag_seconds 0')
+  })
+
+  it('omits the lag sample when the pending timestamp is unparseable', () => {
+    const text = renderMetrics({ ...base, outboxOldestPendingAt: 'not-a-timestamp' })
+    expect(text).toContain('# TYPE bk_outbox_lag_seconds gauge')
+    expect(text).not.toMatch(/^bk_outbox_lag_seconds /m)
+  })
+
+  it('clamps a future pending timestamp to zero lag', () => {
+    const text = renderMetrics({ ...base, outboxOldestPendingAt: '2026-02-01T00:00:05.000Z' })
+    expect(text).toContain('bk_outbox_lag_seconds 0')
+  })
+
+  it('reports rpo 0 for zero assets instead of NaN', () => {
+    const text = renderMetrics({ ...base, rpo: { assets: 0, withinRpo: 0 } })
+    expect(text).toContain('bk_rpo_attainment_ratio 0.000000')
+    expect(text).not.toContain('NaN')
+    expect(text).not.toContain('Infinity')
+  })
+
+  it('reports stalled attempts from the reconciled state, not a caller-supplied count', () => {
+    const text = renderMetrics({ ...base, attemptsByState: { succeeded: 2 } })
+    expect(text).toContain('bk_stalled_attempts_total 0')
+  })
+
+  it('emits 0 instead of NaN for non-finite input values', () => {
+    const text = renderMetrics({
+      ...base,
+      outboxPending: Number.NaN,
+      attemptDurations: [{ state: 'succeeded', seconds: Number.POSITIVE_INFINITY }],
+      backupBytesByProvider: [{ provider: 'pgbackrest', bytes: Number.NEGATIVE_INFINITY }],
+    })
+    expect(text).toContain('bk_outbox_pending 0')
+    expect(text).toContain('bk_backup_bytes_total{provider="pgbackrest"} 0')
+    expect(text).not.toContain('NaN')
+    expect(text).not.toContain('Infinity')
   })
 })
 

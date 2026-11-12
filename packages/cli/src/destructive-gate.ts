@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 
-import { createSqliteRepository } from '@backup-agent/core/persistence'
+import { OUTBOX_TOPIC_RUN_AUDIT, createSqliteRepository } from '@backup-agent/core/persistence'
 import {
   APPROVAL_TTL_MS,
   escalateRisk,
@@ -41,6 +41,7 @@ export type DestructiveDenialReason =
   | 'asset-unregistered'
   | 'identity-unproven'
   | 'approvals-insufficient'
+  | 'risk-understated'
 
 export interface DestructiveGateInput {
   /** Plan as built by the provider, before execution. */
@@ -81,6 +82,52 @@ function denied(
   message: string,
 ): DestructiveGateResult {
   return { kind: 'denied', exitCode, reason, message }
+}
+
+/**
+ * Durable record of a refused authorization (E-03: an unauthorized attempt must
+ * leave an audit trail even though nothing was executed). The outbox row is the
+ * retained audit copy; the dispatcher's audit handler confirms it without any
+ * external I/O.
+ *
+ * Best effort by design: a missing or unreadable control database must not turn
+ * a refusal into a crash, and the refusal stays the primary outcome. A missing
+ * `--yes` is a usage slip rather than an authorization failure, so that branch
+ * is not recorded.
+ */
+async function recordDenial(
+  input: DestructiveGateInput,
+  reason: DestructiveDenialReason,
+  detail: string,
+): Promise<void> {
+  try {
+    if (!existsSync(input.controlDb)) return
+    const now = (input.now ?? new Date()).toISOString()
+    const repo = await createSqliteRepository({ filename: input.controlDb })
+    try {
+      await repo.migrate()
+      await repo.outbox.append({
+        topic: OUTBOX_TOPIC_RUN_AUDIT,
+        payload: {
+          event: 'authorization.denied',
+          reason,
+          detail,
+          planId: input.plan.planId,
+          targetId: input.plan.targetId,
+          risk: input.plan.risk,
+          requester: input.requester,
+          osPrincipal: input.osPrincipal,
+          detectedAt: now,
+        },
+        idempotencyKey: `authz-denied:${input.plan.planId}:${reason}:${now}`,
+        availableAt: now,
+      })
+    } finally {
+      await repo.close()
+    }
+  } catch {
+    // The refusal is the outcome; never mask it with an audit failure.
+  }
 }
 
 /**
@@ -127,10 +174,21 @@ export async function authorizeDestructivePlan(
   const now = input.now ?? new Date()
   const targetId = input.plan.targetId
 
-  // Reversible and read-only plans are not gated; asking for an asset would
-  // make ordinary restores impossible without registration.
+  // Every caller is a command whose Plan must be destructive
+  // (`DESTRUCTIVE_PLAN_COMMANDS`). A plan arriving with a lower label is either
+  // mis-built or deliberately understated, so its own risk field cannot be
+  // trusted to decide that it needs no authorization: refuse instead of
+  // executing an unlabelled destructive step.
   if (!riskAtLeast(input.plan.risk, 'destructive')) {
-    return { kind: 'allowed', plan: input.plan, asset: null, effectiveRisk: input.plan.risk }
+    const detail = `plan declares risk "${input.plan.risk}"`
+    await recordDenial(input, 'risk-understated', detail)
+    return denied(
+      4,
+      'risk-understated',
+      `refusing a ${input.plan.risk} plan for target "${targetId}": this command only runs ` +
+        `destructive plans, and the plan label cannot be trusted to skip approval. ` +
+        `Re-plan with the provider that owns the target.`,
+    )
   }
 
   if (!input.confirmed) {
@@ -142,10 +200,12 @@ export async function authorizeDestructivePlan(
   }
 
   if (provenIdentity(input.plan, input.instance) === null) {
+    await recordDenial(input, 'identity-unproven', identityDenialMessage(input.plan, input.instance))
     return denied(4, 'identity-unproven', identityDenialMessage(input.plan, input.instance))
   }
 
   if (!existsSync(input.controlDb)) {
+    await recordDenial(input, 'asset-unregistered', 'asset lookup: no control database')
     return unregisteredAsset(targetId, input.controlDb)
   }
 
@@ -175,6 +235,7 @@ export async function authorizeDestructivePlan(
   }
 
   if (asset === null) {
+    await recordDenial(input, 'asset-unregistered', `no asset registered for "${targetId}"`)
     return unregisteredAsset(targetId, input.controlDb)
   }
 
@@ -199,6 +260,11 @@ export async function authorizeDestructivePlan(
     status.selfApproved === undefined
       ? ''
       : `\nignored self-approval from requester: ${status.selfApproved.join(', ')}`
+  await recordDenial(
+    input,
+    'approvals-insufficient',
+    `${effectiveRisk} plan requires ${status.required} distinct approvals; have ${status.distinct}`,
+  )
   return denied(
     2,
     'approvals-insufficient',

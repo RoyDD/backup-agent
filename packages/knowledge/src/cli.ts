@@ -121,6 +121,13 @@ async function commandAsk(args: string[]): Promise<number> {
     process.stderr.write('error: missing question\n')
     return 2
   }
+  // `Number()` turns "abc" into NaN, and slice(0, NaN) silently returns no hits;
+  // a retrieval request with an unusable k must fail loudly instead.
+  const k = Number(values.k)
+  if (!Number.isInteger(k) || k < 1) {
+    process.stderr.write('error: --k must be a positive integer\n')
+    return 2
+  }
 
   const scorer = scorerFrom(values)
   const health = await scorer.health()
@@ -132,7 +139,7 @@ async function commandAsk(args: string[]): Promise<number> {
   const db = openIndex(values.db ?? DEFAULT_DB_PATH)
   try {
     const { hits, trace } = await runPipeline(db, question, {
-      k: Number(values.k),
+      k,
       ...(values.source ? { sources: values.source } : {}),
       expandAliases: values.expand !== 'none',
       mode: values.mode as RetrievalMode,

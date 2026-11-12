@@ -33,9 +33,7 @@ pnpm --filter @backup-agent/knowledge ask "归档失败" --scorer http --scorer-
 `knowledge-corpus/wiki/*.md` 分两层，都在 `origin: wiki` 下：
 
 - `pg-*.md`：条目**摘要视图**（默认 `tier: primary`），与主文档一起参与排序；
-- `raw-*.md`：**一手摘录**（`tier: evidence`），入库但**默认不参与排序**——它们是英文原文引用，
-  与摘要/文档重复，实测混排会把 R@10 从 50.01% 拉到 48.85%。需要引用原文时用 `--include-evidence`
-  或 `--source wikiraw-*` 直接取。
+- `raw-*.md`：**一手摘录**（`tier: evidence`），入库但**默认不参与排序**——它们是英文原文引用，与摘要/文档重复，实测混排会把 R@10 从 50.01% 拉到 48.85%。需要引用原文时用 `--include-evidence` 或 `--source wikiraw-*` 直接取。
 
 
 它们是派生物，事实源在 wiki，改内容要改原条目后重新导出。
@@ -69,7 +67,7 @@ SAG2 的准确率来自「这段证据在当前上下文里是否必要」的判
 | `command` | 外部进程，argv-only（`shell: false`），stdin 一个 JSON 请求、stdout `{"scores": [...]}` |
 | `http` | 批量 POST 同一 JSON 契约；key 只从 `--scorer-key-env` 指定的环境变量读取 |
 
-**fail-closed**：缺 argv、缺 url、未知后端 → 退出码 2 并说明原因，绝不静默退回 `lexical`。`ask`/`eval` 开跑前先 `health()` 探测，`scorer` 子命令可单独探。
+**fail-closed**：缺 argv、缺 URL、未知后端 → 退出码 2 并说明原因，绝不静默退回 `lexical`。`ask`/`eval` 开跑前先 `health()` 探测，`scorer` 子命令可单独探。
 
 命令后端的最小 shim（换成任何本地模型都一样）：
 
@@ -82,7 +80,7 @@ SAG2 的准确率来自「这段证据在当前上下文里是否必要」的判
 
 ## 评测
 
-`eval/questions.jsonl`：100 题，四类（`fact` / `multihop` / `troubleshoot` / `confusable`），中英各 50，gold 平均 2.32 个 passage。gold 声明方式：
+`eval/questions.jsonl`：108 题，四类（`fact` / `multihop` / `troubleshoot` / `confusable`），中英各 54，gold 平均 2.73 个 passage（当前索引口径；`w01`–`w08` 为同步 wiki 内容后补题）。gold 声明方式：
 
 ```json
 {"source":"pg16-continuous-archiving","heading":"26.3.1","contains":"archive_command"}

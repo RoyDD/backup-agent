@@ -1,5 +1,5 @@
 import { WebhookNotifier } from '@backup-agent/core'
-import type { AlertSeverity, FetchLike } from '@backup-agent/core'
+import type { AlertSeverity, FetchLike, Notifier } from '@backup-agent/core'
 import {
   OUTBOX_TOPIC_RUN_AUDIT,
   OUTBOX_TOPIC_RUN_FAILURE,
@@ -56,6 +56,12 @@ export interface OutboxHandlerOptions {
   readonly webhookUrl?: string
   /** Injection seam for tests; defaults to global fetch. */
   readonly fetchImpl?: FetchLike
+  /**
+   * Explicit delivery channel (webhook or SMTP). The CLI builds it from the
+   * environment; when it is absent the handler falls back to `webhookUrl` and
+   * still fails closed when neither is configured.
+   */
+  readonly notifier?: Notifier
 }
 
 /**
@@ -66,13 +72,18 @@ export function createOutboxHandlers(
   options: OutboxHandlerOptions,
 ): Readonly<Record<string, OutboxHandler>> {
   const notify: OutboxHandler = async (record) => {
-    if (options.webhookUrl === undefined || options.webhookUrl.trim() === '') {
-      // Fail closed: a misconfigured notifier must not silently drop alerts. The
-      // dispatcher retries and eventually dead-letters the record.
-      throw new Error('BKAGENT_WEBHOOK_URL is not configured for failure notifications')
-    }
+    const notifier =
+      options.notifier ??
+      (options.webhookUrl === undefined || options.webhookUrl.trim() === ''
+        ? // Fail closed: a misconfigured notifier must not silently drop alerts. The
+          // dispatcher retries and eventually dead-letters the record.
+          (() => {
+            throw new Error(
+              'no failure-notification channel is configured; set BKAGENT_WEBHOOK_URL or BKAGENT_SMTP_HOST/FROM/TO',
+            )
+          })()
+        : new WebhookNotifier(options.webhookUrl, options.fetchImpl))
     const notification = parseFailureNotification(record.payload)
-    const notifier = new WebhookNotifier(options.webhookUrl, options.fetchImpl)
     try {
       // `outbox_id` lets the receiver deduplicate at-least-once redelivery; the
       // stored outbox payload itself is never rewritten.
@@ -82,8 +93,13 @@ export function createOutboxHandlers(
       })
     } catch (error) {
       // Keep the destination out of stored errors: last_error is durable and
-      // may be surfaced by operators or exporters.
-      const message = (error as Error).message.split(options.webhookUrl).join('[redacted]')
+      // may be surfaced by operators or exporters. An SMTP notifier never puts
+      // the password in its message, so only the webhook URL needs scrubbing.
+      const raw = (error as Error).message
+      const message =
+        options.webhookUrl === undefined || options.webhookUrl.trim() === ''
+          ? raw
+          : raw.split(options.webhookUrl).join('[redacted]')
       throw new Error(`failure notification delivery failed: ${message}`)
     }
   }

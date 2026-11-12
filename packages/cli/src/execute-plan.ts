@@ -1,12 +1,17 @@
-import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { mkdirSync, statfsSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
 
 import {
   DestructiveAuthorizationDeniedError,
+  LOCAL_TRANSPORT,
   asAttemptId,
   asMandateId,
   asTicketId,
+  createExecutorForTransport,
+  describeTransport,
+  isRemoteTransport,
   newId,
+  storeArtifact,
   runPlan,
   validatePlan,
   type Capability,
@@ -19,9 +24,11 @@ import {
   type Plan,
   type PlanBuildContext,
   type PlanValidationIssue,
+  type ArtifactSink,
   type Repository,
   type RunPlanResult,
   type TargetId,
+  type TransportSpec,
 } from '@backup-agent/core'
 import {
   createSqliteRepository,
@@ -66,6 +73,16 @@ export interface PlanExecutionDeps {
   /** Principal used to derive the lease owner; defaults to `os` identity. */
   readonly principalId?: string
   readonly stateDir?: string
+  /**
+   * Continue a previously checkpointed run of the same `planId`, skipping steps
+   * whose checkpoint policy marked them finished. Requires `stateDir`.
+   */
+  readonly resume?: boolean
+  /**
+   * Overrides how a remote transport becomes an `Executor`. Tests inject a fake
+   * here; production uses `createExecutorForTransport`. Local plans never use it.
+   */
+  readonly executorForTransport?: (spec: TransportSpec) => Executor
   /** Subprocess environment overlays (credentials never enter argv). */
   readonly env?: Readonly<Record<string, string>>
   readonly lease?: PlanLeaseOptions
@@ -83,6 +100,13 @@ export interface PlanExecutionDeps {
    * provider owns its repository layout, so no local path is invented.
    */
   readonly artifact?: RunArtifactInput
+  /**
+   * Storage sink for that artifact. When present, a successful run uploads the
+   * local file and the row records the storage location plus a content digest;
+   * a failed upload fails the run rather than claiming a location that does not
+   * exist. Requires a local transport — remote bytes are not reachable here.
+   */
+  readonly artifactSink?: ArtifactSink
   /**
    * Called with the terminal outcome after it has been persisted, while the
    * lease is still held. `attemptId` identifies the row the lifecycle recorded;
@@ -126,8 +150,17 @@ export interface PlanExecution {
   readonly persistence: FinishRunOutcome | null
 }
 
-/** Builds the identity/timestamp envelope every provider plan needs. */
-export function buildPlanContext(instance: InstanceInfo, digest: string): PlanBuildContext {
+/**
+ * Builds the identity/timestamp envelope every provider plan needs.
+ *
+ * `transport` is recorded on the produced Plan (remote kinds only; `local` stays
+ * implicit so plans built before transports existed stay byte-identical).
+ */
+export function buildPlanContext(
+  instance: InstanceInfo,
+  digest: string,
+  transport?: TransportSpec,
+): PlanBuildContext {
   const now = new Date().toISOString()
   return {
     ticketId: asTicketId(newId('tkt')),
@@ -135,6 +168,7 @@ export function buildPlanContext(instance: InstanceInfo, digest: string): PlanBu
     now,
     instance,
     configDigest: digest,
+    ...(transport === undefined || transport.kind === 'local' ? {} : { transport }),
   }
 }
 
@@ -153,14 +187,47 @@ function mandateFor(plan: Plan, principalId: string): MandateRecord {
 }
 
 /**
+ * Free bytes on the filesystem that will hold `path`.
+ *
+ * The destination usually does not exist yet (`--out` for a new backup), so the
+ * lookup walks up to the nearest existing ancestor. When nothing on the chain is
+ * statable the rule is satisfied with `MAX_SAFE_INTEGER`: a filesystem probe
+ * failure must not block a plan the operator can still run, and the RESOURCE
+ * rule only fires for plans that declare a local byte estimate.
+ */
+export function availableBytesAt(path: string | undefined): number {
+  if (path === undefined || path.trim() === '') return Number.MAX_SAFE_INTEGER
+  let current = resolve(path)
+  for (let depth = 0; depth < 64; depth += 1) {
+    try {
+      const stats = statfsSync(current)
+      return Number(stats.bavail) * Number(stats.bsize)
+    } catch {
+      const parent = dirname(current)
+      if (parent === current) break
+      current = parent
+    }
+  }
+  return Number.MAX_SAFE_INTEGER
+}
+
+/**
  * Validates a Plan against the declared engine capabilities and a CLI-issued
  * mandate. Returns issues instead of throwing so callers keep their existing
  * exit-code contract (4 for plan/probe failure).
+ *
+ * `resourcePath` is the local filesystem destination of the plan (backup output
+ * directory, PITR data directory). Omit it for plans whose bytes land on the
+ * database host: the control plane cannot measure that filesystem, so the
+ * RESOURCE rule stays vacuous instead of comparing against a wrong disk.
+ * Capabilities required by the plan itself are declared on the Plan
+ * (`Plan.requires`) and validated here against the provider's declared set.
  */
 export function validateForExecution(
   plan: Plan,
   principalId: string,
   declaredCapabilities: ReadonlySet<Capability> = postgresEngine.capabilities,
+  resourcePath?: string,
 ): PlanValidationIssue[] {
   const now = new Date().toISOString()
   return validatePlan(plan, {
@@ -168,7 +235,7 @@ export function validateForExecution(
     declaredCapabilities,
     requiredCapabilities: [],
     mandate: mandateFor(plan, principalId),
-    resources: { availableBytes: Number.MAX_SAFE_INTEGER, maxConcurrency: 8 },
+    resources: { availableBytes: availableBytesAt(resourcePath), maxConcurrency: 8 },
     policyValid: true,
   })
 }
@@ -326,6 +393,51 @@ export async function executePlan(
   deps: PlanExecutionDeps,
 ): Promise<PlanExecution> {
   const now = deps.now ?? (() => new Date().toISOString())
+  const transport = plan.transport ?? LOCAL_TRANSPORT
+  // SSH/kubectl do not forward the child environment, so an env-based credential
+  // would be dropped silently. Refuse before any lease or subprocess: a remote
+  // plan must rely on credentials provisioned on the target host.
+  if (
+    isRemoteTransport(transport) &&
+    deps.env !== undefined &&
+    Object.keys(deps.env).length > 0
+  ) {
+    return {
+      result: {
+        planId: plan.planId,
+        status: 'failed',
+        steps: [],
+        errorClass: 'manual',
+        error:
+          `plan targets ${describeTransport(transport)} but environment credentials were supplied; ` +
+          'remote transports do not forward the child environment. Provision credentials on the ' +
+          'target host (for example a .pgpass or peer/GSSAPI authentication) and re-run.',
+      },
+      lease: null,
+      attemptId: null,
+      persistence: null,
+    }
+  }
+  if (isRemoteTransport(transport) && deps.artifactSink !== undefined) {
+    return {
+      result: {
+        planId: plan.planId,
+        status: 'failed',
+        steps: [],
+        errorClass: 'manual',
+        error:
+          `plan targets ${describeTransport(transport)} but an artifact sink is configured; ` +
+          'uploading requires the bytes on the control-plane host. Run without a storage sink, ' +
+          'then copy the artifact yourself, or execute the plan locally.',
+      },
+      lease: null,
+      attemptId: null,
+      persistence: null,
+    }
+  }
+  const executor = isRemoteTransport(transport)
+    ? (deps.executorForTransport ?? createExecutorForTransport)(transport)
+    : deps.executor
   const ttlMs = deps.lease?.ttlMs ?? DEFAULT_LEASE_TTL_MS
   const maxInterval = Math.max(1, Math.floor(ttlMs / 3))
   const heartbeatMs = Math.min(deps.lease?.heartbeatMs ?? maxInterval, maxInterval)
@@ -423,10 +535,11 @@ export async function executePlan(
     const held: PlanLease = lease
     try {
       const result = await runPlan(plan, {
-        executor: deps.executor,
+        executor,
         ...(deps.env === undefined ? {} : { env: deps.env }),
         systemIdentifier: instance.systemIdentifier,
         ...(deps.stateDir === undefined ? {} : { stateDir: deps.stateDir }),
+        ...(deps.resume === true ? { resume: true } : {}),
         onStep: (event) => {
           if (event.type === 'start') deps.writeError(`[${event.stepId}] running\n`)
         },
@@ -443,25 +556,63 @@ export async function executePlan(
         )
       }
 
+      // A remote artifact lives on the target host; recording its local-looking
+      // path would point at a file that does not exist here.
+      let artifact: RunArtifactInput | undefined =
+        deps.artifact !== undefined && isRemoteTransport(transport)
+          ? { ...deps.artifact, path: `${describeTransport(transport)}:${deps.artifact.path}` }
+          : deps.artifact
+      let outcome = result
+      if (result.status === 'succeeded' && deps.artifact !== undefined && deps.artifactSink !== undefined) {
+        try {
+          const stored = await storeArtifact(deps.artifactSink, {
+            targetId: plan.targetId,
+            kind: deps.artifact.kind,
+            planId: plan.planId,
+            localPath: deps.artifact.path,
+          })
+          artifact = {
+            ...deps.artifact,
+            path: stored.location,
+            sizeBytes: stored.bytes,
+            checksum: stored.digest,
+          }
+          deps.writeError(
+            `bkagent: artifact stored at ${stored.location} (${stored.bytes} bytes, ` +
+              `${stored.digest.slice(0, 12)}...)\n`,
+          )
+        } catch (error) {
+          // The external work succeeded but the promised location does not exist;
+          // never persist a location the operator cannot read back.
+          artifact = undefined
+          outcome = {
+            ...result,
+            status: 'failed',
+            errorClass: 'permanent',
+            error: `artifact storage failed: ${(error as Error).message}`,
+          }
+        }
+      }
+
       // Terminal state, lineage and Outbox events commit in one short
       // transaction while the lease is still held. External work is already
       // finished, so no transaction spans a subprocess.
       const persistence = await finishRun(repo, {
         plan,
-        result,
+        result: outcome,
         lease: held,
         attemptId: persistedAttemptId,
         now: now(),
-        ...(deps.artifact === undefined ? {} : { artifact: deps.artifact }),
+        ...(artifact === undefined ? {} : { artifact }),
       })
       // A successful or failed run whose terminal state could not be committed
       // authoritatively is reported as `lease-lost`: the caller must never treat
       // an unrecorded run as success.
       const finalResult =
-        persistence.persisted || result.status === 'lease-lost'
-          ? result
-          : runNotAuthoritative(plan, result, persistence.reason)
-      if (!persistence.persisted && result.status !== 'lease-lost') {
+        persistence.persisted || outcome.status === 'lease-lost'
+          ? outcome
+          : runNotAuthoritative(plan, outcome, persistence.reason)
+      if (!persistence.persisted && outcome.status !== 'lease-lost') {
         deps.writeError(`bkagent: run outcome not recorded: ${persistence.reason}\n`)
       }
       if (deps.recordOutcome !== undefined) {
