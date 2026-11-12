@@ -531,6 +531,52 @@ describe('finishRun', () => {
     })
   })
 
+  it('records cleanup and cleanupFailed in the audit event', async () => {
+    const r = await open()
+    const plan = makePlan()
+    const { lease, attemptId } = await beginRun(r, plan)
+
+    const result = failure(plan)
+    const outcome = await finishRun(r, {
+      plan,
+      result: {
+        ...result,
+        cleanup: [
+          {
+            stepId: 'stop-instance-on-failure',
+            status: 'failed',
+            attempts: 2,
+            exitCode: 1,
+            stdout: '',
+            stderr: 'server still running',
+            durationMs: 1,
+          },
+        ],
+        cleanupFailed: ['stop-instance-on-failure'],
+      },
+      lease,
+      attemptId,
+      now: at(1_000),
+    })
+    expect(outcome.persisted).toBe(true)
+
+    const audits: Array<Record<string, unknown>> = []
+    await dispatchOutbox(r, {
+      now: () => at(2_000),
+      handlers: {
+        [OUTBOX_TOPIC_RUN_AUDIT]: async (record) => {
+          audits.push(record.payload as Record<string, unknown>)
+        },
+        [OUTBOX_TOPIC_RUN_FAILURE]: async () => {},
+      },
+    })
+    const terminal = audits.find((payload) => payload['event'] === 'run.finished')
+    expect(terminal).toMatchObject({
+      cleanup: [{ stepId: 'stop-instance-on-failure', status: 'failed', attempts: 2 }],
+      cleanupFailed: ['stop-instance-on-failure'],
+    })
+  })
+
   it('writes nothing for a lease-lost run and leaves the attempt running', async () => {
     const r = await open()
     const plan = makePlan()

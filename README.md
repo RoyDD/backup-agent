@@ -73,7 +73,7 @@ pnpm bkagent dashboard --db .bkagent/control.db --out /tmp/dashboard.html
 ## 约束
 
 - 确定性核心为状态唯一写入者；智能体层只做意图解析与呈现。
-- `Plan` 为 Step DAG，每步必须声明 `idempotencyKey`，执行前重新求值前置条件。
+- `Plan` 为 Step DAG，每步必须声明 `idempotencyKey`，执行前重新求值前置条件；可选 `cleanup` 图只在失败时执行，用于补偿（例如 PITR 失败后停止实例），清理失败会明确报告且不覆盖原始失败。
 - 外部副作用与状态迁移同事务写入 Outbox；`bkagent outbox-dispatch` 独立投递，至少一次，接收端按 `outbox_id` 去重（不承诺 exactly-once）。
 - 租约带单调递增 fencing token；过期写入被拒绝。
 - 控制库仅经 `Repository` 端口访问。

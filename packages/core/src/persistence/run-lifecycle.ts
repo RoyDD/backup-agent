@@ -469,6 +469,19 @@ function auditPayload(
       attempts: step.attempts,
       exitCode: step.exitCode,
     })),
+    // Compensation that ran after the failure, so the audit record shows what was
+    // done to the target and whether it completed.
+    ...(result.cleanup === undefined
+      ? {}
+      : {
+          cleanup: result.cleanup.map((step) => ({
+            stepId: step.stepId,
+            status: step.status,
+            attempts: step.attempts,
+            exitCode: step.exitCode,
+          })),
+        }),
+    ...(result.cleanupFailed === undefined ? {} : { cleanupFailed: result.cleanupFailed }),
     recordedAt: now,
   }
 }

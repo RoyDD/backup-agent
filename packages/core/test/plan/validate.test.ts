@@ -16,6 +16,57 @@ describe('validatePlan', () => {
     expect(issues.some((issue) => issue.code === 'SCHEMA' && issue.path.endsWith('.stepId'))).toBe(true)
   })
 
+  it('accepts a plan with a cleanup graph', () => {
+    const plan = makePlan({
+      cleanup: [makeStep({ stepId: 'stop', argv: ['pg_ctl', 'stop'], idempotencyKey: 'stop' })],
+    })
+    expect(validatePlan(plan, makeContext())).toEqual([])
+  })
+
+  it('rejects a cleanup step id that collides with a main step', () => {
+    const plan = makePlan({ cleanup: [makeStep({ idempotencyKey: 'stop' })] })
+    const issues = validatePlan(plan, makeContext())
+    expect(issues.some((issue) => issue.path.startsWith('cleanup[0].stepId'))).toBe(true)
+  })
+
+  it('rejects a cleanup dependency on a main step', () => {
+    const plan = makePlan({
+      cleanup: [
+        makeStep({ stepId: 'stop', dependsOn: ['dump'], argv: ['pg_ctl', 'stop'], idempotencyKey: 'stop' }),
+      ],
+    })
+    const issues = validatePlan(plan, makeContext())
+    expect(issues.some((issue) => issue.message.includes('unknown cleanup step'))).toBe(true)
+  })
+
+  it('rejects shell metacharacters in cleanup argv', () => {
+    const plan = makePlan({
+      cleanup: [
+        makeStep({ stepId: 'stop', argv: ['sh', '-c', 'pg_ctl stop; rm -rf /'], idempotencyKey: 'stop' }),
+      ],
+    })
+    const issues = validatePlan(plan, makeContext())
+    expect(
+      issues.some((issue) => issue.path.startsWith('cleanup[0].argv') && issue.code === 'SCHEMA'),
+    ).toBe(true)
+  })
+
+  it('rejects a cleanup dependency cycle', () => {
+    const plan = makePlan({
+      cleanup: [
+        makeStep({ stepId: 'a', dependsOn: ['b'], argv: ['a'], idempotencyKey: 'a' }),
+        makeStep({ stepId: 'b', dependsOn: ['a'], argv: ['b'], idempotencyKey: 'b' }),
+      ],
+    })
+    const issues = validatePlan(plan, makeContext())
+    expect(issues.some((issue) => issue.path === 'cleanup' && issue.message.includes('cycle'))).toBe(true)
+  })
+
+  it('rejects an empty cleanup array instead of ignoring it', () => {
+    const issues = validatePlan(makePlan({ cleanup: [] }), makeContext())
+    expect(issues.some((issue) => issue.path === 'cleanup')).toBe(true)
+  })
+
   it('rejects unknown dependencies', () => {
     const plan = makePlan({ steps: [makeStep({ dependsOn: ['missing'] })] })
     const issues = validatePlan(plan, makeContext())

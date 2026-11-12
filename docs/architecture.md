@@ -130,6 +130,21 @@ flowchart TD
 
 **fencing 边界**：fence 保护的是控制库提交。被取代或已过期的 worker 整个终态事务回滚，即使过期租约尚未被新 owner 接管也不能写入；外部 PostgreSQL、`pgbackrest`、`wal-g` 进程只在租约丢失时通过 `AbortSignal` **尽力**终止，provider 侧没有 fencing，不能据此断言外部副作用已被阻断。
 
+### 2.3 计划失败清理（cleanup）
+
+`Plan.cleanup` 是可选的补偿步骤图（`packages/core/src/domain/plan.ts`），只有当主步骤图失败时才由 `runPlan` 执行。
+
+- 只在**失败**时执行，成功不触发；租约在清理边界已丢失时不执行任何清理步骤，因为此时没有派发权限。
+- 每个清理步骤尽力尝试，前一步失败不会阻断后续清理；前置条件不再成立（例如 `postmaster.pid` 已消失）时记为 `skipped`，因此重复执行是幂等的。
+- 清理失败写入 `result.cleanupFailed`，**不替换**原始 `failedStep`/`error`；`audit.run` 事件同时记录 `cleanup` 与 `cleanupFailed`，CLI 另在 stderr 提示目标可能需要人工处理。
+- 清理属于可执行内容，因此纳入 `PlanFingerprint` 与 `validatePlan`（独立 DAG、禁止与主图重名、禁止依赖主图步骤、argv 同样禁止 shell 元字符）。
+
+PITR 使用该机制：`buildPitrRestorePlan` 始终附带 cleanup 图——`stop-instance-on-failure`（`pg_ctl stop -m fast`）与随后的 `clear-start-marker`。
+
+- `pg_ctl start` 成功后才写入 `<data-dir>/.bkagent-pitr-started`，cleanup 的停止步骤以「标记 + `postmaster.pid` 同时存在」为前置条件（前者证明实例由本 Plan 启动，后者证明仍有进程可停）。因此清理**只会停止本 Plan 启动的实例**：若 `start-instance` 因数据目录已有服务而卡在前置条件（`postmaster.pid` 存在），标记并不存在，cleanup 会跳过，不会误停他人的实例。
+- 停止后删除标记，避免复用同一数据目录的下一个实例被后续清理误停。
+- 此前目标未达成时服务器会继续占用数据目录，导致重跑时 `pg_ctl start` 直接失败；现在失败后实例会被停止，修正参数后可直接重跑。若清理本身失败（`cleanupFailed`），CLI 会在 stderr 明确报告，需要人工停止实例后再重试。
+
 ### 2.3 Outbox 派发
 
 `packages/core/src/persistence/outbox-dispatch.ts` + `bkagent outbox-dispatch --db … [--limit N] [--max-attempts N]` 是独立于执行的派发器（cron 示例见 `deploy/cron.example`），`executePlan` 内联派发是被禁止的。

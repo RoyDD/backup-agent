@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generatedAt": "2026-11-12T09:04:38.080Z",
+  "generatedAt": "2026-11-12T09:52:03.158Z",
   "entries": [
     {
       "name": "engine-extend",
@@ -15,7 +15,7 @@
     {
       "name": "pg-pitr",
       "path": "pg-pitr/SKILL.md",
-      "sha256": "4efb3242d44d4b436b6a4a8151f8e3215c114a6063412d6bdbb1ee9435fff8fd"
+      "sha256": "c6e2af6eded21214e32862506cd09e45267a61e73be05ac5004fd4650734fecc"
     },
     {
       "name": "pg-restore",

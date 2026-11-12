@@ -9,6 +9,7 @@ import {
   type PlanBuildContext,
   type PlanValidationContext,
 } from '@backup-agent/core'
+import type { Plan, Step } from '@backup-agent/core'
 
 import {
   buildPhysicalBackupArgv,
@@ -139,6 +140,10 @@ function lastArgv(step: { argv?: readonly string[] } | undefined): string {
   return step?.argv?.[step.argv.length - 1] ?? ''
 }
 
+function stepById(plan: Plan, stepId: string): Step | undefined {
+  return plan.steps.find((step) => step.stepId === stepId)
+}
+
 describe('buildPitrRestorePlan', () => {
   it('stages a paused recovery target before promoting', () => {
     const plan = buildPitrRestorePlan(
@@ -155,6 +160,7 @@ describe('buildPitrRestorePlan', () => {
       'write-recovery-config',
       'write-recovery-signal',
       'start-instance',
+      'write-start-marker',
       'assert-recovery-target',
       'promote-instance',
       'assert-promoted',
@@ -164,14 +170,14 @@ describe('buildPitrRestorePlan', () => {
     expect(plan.steps[0]?.file?.content).toContain("recovery_target_lsn = '0/2000028'")
     expect(plan.steps[0]?.file?.content).toContain("recovery_target_action = 'pause'")
 
-    const targetStep = plan.steps[3]
-    expect(targetStep?.dependsOn).toEqual(['start-instance'])
+    const targetStep = stepById(plan, 'assert-recovery-target')
+    expect(targetStep?.dependsOn).toEqual(['write-start-marker'])
     const targetSql = lastArgv(targetStep)
     expect(targetSql).toContain("pg_get_wal_replay_pause_state() = 'paused'")
     expect(targetSql).toContain('pg_wal_lsn_diff')
     expect(targetSql).toContain("'0/2000028'::pg_lsn")
 
-    expect(plan.steps[4]?.argv).toEqual([
+    expect(stepById(plan, 'promote-instance')?.argv).toEqual([
       'pg_ctl',
       '-D',
       '/tmp/rec',
@@ -180,11 +186,63 @@ describe('buildPitrRestorePlan', () => {
       '-t',
       '60',
     ])
-    expect(plan.steps[5]?.dependsOn).toEqual(['promote-instance'])
-    const promotedSql = lastArgv(plan.steps[5])
+    expect(stepById(plan, 'assert-promoted')?.dependsOn).toEqual(['promote-instance'])
+    const promotedSql = lastArgv(stepById(plan, 'assert-promoted'))
     expect(promotedSql).toContain('not pg_is_in_recovery()')
     expect(promotedSql).toContain('pg_wal_lsn_diff')
-    expect(plan.steps[6]?.dependsOn).toEqual(['assert-promoted'])
+    expect(stepById(plan, 'verify-data')?.dependsOn).toEqual(['assert-promoted'])
+  })
+
+  it('fails permanently once recovery ended without reaching the target', () => {
+    const plan = buildPitrRestorePlan({ ...pitrBase, target: { name: 'before-drop' } }, ctx)
+    const sql = lastArgv(stepById(plan, 'assert-recovery-target'))
+    expect(sql).toContain('when not pg_is_in_recovery() then')
+    expect(sql).toContain('pitr target not reached')
+    expect(sql).toContain('else 1 / (case when')
+  })
+
+  it('stops an instance that fails before the target as cleanup', () => {
+    for (const action of ['promote', 'pause', 'shutdown'] as const) {
+      const plan = buildPitrRestorePlan(
+        { ...pitrBase, target: { name: 'before-drop' }, action },
+        ctx,
+      )
+      const cleanup = plan.cleanup ?? []
+      expect(cleanup.map((step) => step.stepId)).toEqual([
+        'stop-instance-on-failure',
+        'clear-start-marker',
+      ])
+      const stop = cleanup[0]
+      expect(stop?.argv).toEqual([
+        'pg_ctl',
+        '-D',
+        '/tmp/rec',
+        'stop',
+        '-m',
+        'fast',
+        '-w',
+        '-t',
+        '60',
+      ])
+      // Only cleanup an instance this Plan started: the marker is written after
+      // `pg_ctl start` succeeded.
+      expect(stop?.preconditions).toEqual([
+        { kind: 'fileExists', path: '/tmp/rec/.bkagent-pitr-started' },
+        { kind: 'fileExists', path: '/tmp/rec/postmaster.pid' },
+      ])
+      expect(stop?.postconditions).toEqual([
+        { kind: 'pathAbsent', path: '/tmp/rec/postmaster.pid' },
+      ])
+      // Cleanup must be recognised by the Plan validator, or it would be dropped.
+      expect(validatePlan(plan, validationContext)).toEqual([])
+    }
+  })
+
+  it('refuses to start over a data directory that still has a postmaster.pid', () => {
+    const plan = buildPitrRestorePlan({ ...pitrBase, target: { name: 'before-drop' } }, ctx)
+    expect(plan.steps.find((step) => step.stepId === 'start-instance')?.preconditions).toEqual([
+      { kind: 'pathAbsent', path: '/tmp/rec/postmaster.pid' },
+    ])
   })
 
   it('checks a time target and avoids shell metacharacters in the assertion', () => {
@@ -192,7 +250,7 @@ describe('buildPitrRestorePlan', () => {
       { ...pitrBase, target: { time: '2026-01-01 00:00:00+00' } },
       ctx,
     )
-    const targetStep = plan.steps[3]
+    const targetStep = stepById(plan, 'assert-recovery-target')
     const sql = lastArgv(targetStep)
     expect(sql).toContain('pg_last_xact_replay_timestamp() is null or greatest')
     expect(sql).toContain("'2026-01-01 00:00:00+00'::timestamptz")
@@ -204,7 +262,7 @@ describe('buildPitrRestorePlan', () => {
   it('relies on the paused state for name and xid targets', () => {
     for (const target of [{ name: 'before-drop' }, { xid: '12345' }]) {
       const plan = buildPitrRestorePlan({ ...pitrBase, target }, ctx)
-      const sql = lastArgv(plan.steps[3])
+      const sql = lastArgv(stepById(plan, 'assert-recovery-target'))
       expect(sql).toContain("pg_get_wal_replay_pause_state() = 'paused'")
       expect(sql).not.toContain('pg_last_xact_replay_timestamp')
     }
@@ -219,10 +277,11 @@ describe('buildPitrRestorePlan', () => {
       'write-recovery-config',
       'write-recovery-signal',
       'start-instance',
+      'write-start-marker',
       'assert-recovery-target',
       'verify-data',
     ])
-    expect(plan.steps[4]?.dependsOn).toEqual(['assert-recovery-target'])
+    expect(stepById(plan, 'verify-data')?.dependsOn).toEqual(['assert-recovery-target'])
   })
 
   it('verifies the target before stopping for a shutdown action', () => {
@@ -234,11 +293,12 @@ describe('buildPitrRestorePlan', () => {
       'write-recovery-config',
       'write-recovery-signal',
       'start-instance',
+      'write-start-marker',
       'assert-recovery-target',
       'verify-data',
       'stop-instance',
     ])
-    const stop = plan.steps[5]
+    const stop = stepById(plan, 'stop-instance')
     expect(stop?.dependsOn).toEqual(['verify-data'])
     expect(stop?.argv).toEqual([
       'pg_ctl',

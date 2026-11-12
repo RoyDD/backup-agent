@@ -27,6 +27,7 @@ export function fingerprintPlan(plan: Plan): string {
     provider: plan.provider,
     targetId: plan.targetId,
     steps: plan.steps,
+    cleanup: plan.cleanup,
     resources: plan.resources,
     risk: plan.risk,
   }

@@ -85,6 +85,16 @@ export interface Plan {
   readonly targetId: TargetId
   readonly fingerprint: PlanFingerprint
   readonly steps: readonly Step[]
+  /**
+   * Best-effort steps that run only when the Plan fails, in their own DAG.
+   *
+   * They exist to leave the target in a recoverable state (for example stopping
+   * a PITR instance that never reached its target). They are never dispatched on
+   * success, never run without a held lease, and a failure among them does not
+   * replace the original failure that triggered them. A cleanup step whose
+   * preconditions no longer hold is skipped, so cleanup is idempotent.
+   */
+  readonly cleanup?: readonly Step[]
   readonly resources: ResourceEstimate
   readonly risk: RiskLevel
 }

@@ -71,96 +71,26 @@ export function validatePlan(plan: Plan, ctx: PlanValidationContext): PlanValida
   if (plan.steps.length === 0) add('SCHEMA', 'steps', 'must contain at least one step')
 
   const byId = new Map<string, Step>()
-  plan.steps.forEach((step, index) => {
-    const base = `steps[${index}]`
-    if (!nonEmpty(step.stepId)) add('SCHEMA', `${base}.stepId`, 'must be a non-empty string')
-    else if (byId.has(step.stepId)) add('SCHEMA', `${base}.stepId`, `duplicate step id "${step.stepId}"`)
-    else byId.set(step.stepId, step)
-
-    if (!(STEP_KINDS as readonly string[]).includes(step.kind)) {
-      add('SCHEMA', `${base}.kind`, `must be one of ${STEP_KINDS.join(', ')}`)
-    }
-    if (!(CHECKPOINT_MODES as readonly string[]).includes(step.checkpoint)) {
-      add('SCHEMA', `${base}.checkpoint`, `must be one of ${CHECKPOINT_MODES.join(', ')}`)
-    }
-    if (!nonEmpty(step.idempotencyKey)) {
-      add('SCHEMA', `${base}.idempotencyKey`, 'must be a non-empty string')
-    }
-    if (step.timeoutMs !== undefined && !(Number.isFinite(step.timeoutMs) && step.timeoutMs > 0)) {
-      add('SCHEMA', `${base}.timeoutMs`, 'must be a positive number when present')
-    }
-
-    if (!Number.isInteger(step.retry.maxAttempts) || step.retry.maxAttempts < 1) {
-      add('SCHEMA', `${base}.retry.maxAttempts`, 'must be an integer >= 1')
-    }
-    if (!Number.isFinite(step.retry.initialDelayMs) || step.retry.initialDelayMs < 0) {
-      add('SCHEMA', `${base}.retry.initialDelayMs`, 'must be a number >= 0')
-    }
-    if (step.retry.maxDelayMs < step.retry.initialDelayMs) {
-      add('SCHEMA', `${base}.retry.maxDelayMs`, 'must be >= initialDelayMs')
-    }
-    if (!(BACKOFF_KINDS as readonly string[]).includes(step.retry.backoff)) {
-      add('SCHEMA', `${base}.retry.backoff`, `must be one of ${BACKOFF_KINDS.join(', ')}`)
-    }
-    for (const errorClass of step.retry.retryOn) {
-      if (!isErrorClass(errorClass)) {
-        add('SCHEMA', `${base}.retry.retryOn`, `unknown error class "${String(errorClass)}"`)
-      }
-    }
-
-    const needsArgv = step.kind === 'exec' || step.kind === 'transfer'
-    if (needsArgv) {
-      if (!step.argv || step.argv.length === 0) {
-        add('SCHEMA', `${base}.argv`, `is required for kind "${step.kind}"`)
-      }
-    } else if (step.argv !== undefined) {
-      add('SCHEMA', `${base}.argv`, `is forbidden for kind "${step.kind}"`)
-    }
-    step.argv?.forEach((arg, argIndex) => {
-      const path = `${base}.argv[${argIndex}]`
-      if (!nonEmpty(arg)) add('SCHEMA', path, 'must be a non-empty string')
-      else if (SHELL_METACHARACTERS.test(arg)) {
-        add('SCHEMA', path, 'must not contain shell metacharacters')
-      }
-    })
-
-    const needsFile = step.kind === 'write-file'
-    if (needsFile) {
-      if (!step.file) {
-        add('SCHEMA', `${base}.file`, `is required for kind "${step.kind}"`)
-      } else {
-        if (!nonEmpty(step.file.path)) add('SCHEMA', `${base}.file.path`, 'must be a non-empty string')
-        if (typeof step.file.content !== 'string') {
-          add('SCHEMA', `${base}.file.content`, 'must be a string')
-        }
-        if (step.file.mode !== undefined) {
-          if (!Number.isInteger(step.file.mode) || step.file.mode < 0 || step.file.mode > 0o777) {
-            add('SCHEMA', `${base}.file.mode`, 'must be an integer between 0 and 0o777')
-          }
-        }
-      }
-    } else if (step.file !== undefined) {
-      add('SCHEMA', `${base}.file`, `is forbidden for kind "${step.kind}"`)
-    }
-
-    step.dependsOn.forEach((dependency, depIndex) => {
-      if (!nonEmpty(dependency)) {
-        add('SCHEMA', `${base}.dependsOn[${depIndex}]`, 'must be a non-empty string')
-      }
-    })
-  })
-
-  // Dependency existence and acyclicity.
-  for (const [index, step] of plan.steps.entries()) {
-    for (const dependency of step.dependsOn) {
-      if (!byId.has(dependency)) {
-        add('SCHEMA', `steps[${index}].dependsOn`, `unknown step "${dependency}"`)
-      }
+  validateStepList(plan.steps, 'steps', add, byId)
+  if (plan.cleanup !== undefined) {
+    if (plan.cleanup.length === 0) {
+      add('SCHEMA', 'cleanup', 'must not be an empty array when present')
+    } else {
+      // Cleanup has its own DAG: it runs after the main graph already failed, so
+      // a dependency on a main step would never be satisfiable at that point.
+      validateStepList(plan.cleanup, 'cleanup', add, byId)
     }
   }
+  // Dependency existence and acyclicity. Cleanup keeps its own independent DAG.
   const cycle = findCycle(plan.steps)
   if (cycle) {
     add('SCHEMA', 'steps', `dependency cycle detected: ${cycle.join(' -> ')}`)
+  }
+  if (plan.cleanup !== undefined && plan.cleanup.length > 0) {
+    const cleanupCycle = findCycle(plan.cleanup)
+    if (cleanupCycle) {
+      add('SCHEMA', 'cleanup', `dependency cycle detected: ${cleanupCycle.join(' -> ')}`)
+    }
   }
 
   // ── FINGERPRINT ───────────────────────────────────────────────────────────
@@ -249,6 +179,121 @@ export function validatePlan(plan: Plan, ctx: PlanValidationContext): PlanValida
   }
 
   return issues
+}
+
+type AddIssue = (code: PlanValidationCode, path: string, message: string) => void
+
+/**
+ * Validates one step list (the main graph or the cleanup graph).
+ *
+ * `allIds` is shared between both lists so a step id cannot be ambiguous across
+ * them; dependency resolution is restricted to the list's own ids, because a
+ * cleanup dependency on a main step could never be satisfied when cleanup runs.
+ */
+function validateStepList(
+  steps: readonly Step[],
+  base: 'steps' | 'cleanup',
+  add: AddIssue,
+  allIds: Map<string, Step>,
+): void {
+  const localIds = new Set<string>()
+
+  steps.forEach((step, index) => {
+    const path = `${base}[${index}]`
+    if (!nonEmpty(step.stepId)) add('SCHEMA', `${path}.stepId`, 'must be a non-empty string')
+    else if (allIds.has(step.stepId)) {
+      add('SCHEMA', `${path}.stepId`, `duplicate step id "${step.stepId}"`)
+    } else {
+      allIds.set(step.stepId, step)
+      localIds.add(step.stepId)
+    }
+  })
+
+  steps.forEach((step, index) => {
+    const path = `${base}[${index}]`
+    if (!(STEP_KINDS as readonly string[]).includes(step.kind)) {
+      add('SCHEMA', `${path}.kind`, `must be one of ${STEP_KINDS.join(', ')}`)
+    }
+    if (!(CHECKPOINT_MODES as readonly string[]).includes(step.checkpoint)) {
+      add('SCHEMA', `${path}.checkpoint`, `must be one of ${CHECKPOINT_MODES.join(', ')}`)
+    }
+    if (!nonEmpty(step.idempotencyKey)) {
+      add('SCHEMA', `${path}.idempotencyKey`, 'must be a non-empty string')
+    }
+    if (step.timeoutMs !== undefined && !(Number.isFinite(step.timeoutMs) && step.timeoutMs > 0)) {
+      add('SCHEMA', `${path}.timeoutMs`, 'must be a positive number when present')
+    }
+
+    if (!Number.isInteger(step.retry.maxAttempts) || step.retry.maxAttempts < 1) {
+      add('SCHEMA', `${path}.retry.maxAttempts`, 'must be an integer >= 1')
+    }
+    if (!Number.isFinite(step.retry.initialDelayMs) || step.retry.initialDelayMs < 0) {
+      add('SCHEMA', `${path}.retry.initialDelayMs`, 'must be a number >= 0')
+    }
+    if (step.retry.maxDelayMs < step.retry.initialDelayMs) {
+      add('SCHEMA', `${path}.retry.maxDelayMs`, 'must be >= initialDelayMs')
+    }
+    if (!(BACKOFF_KINDS as readonly string[]).includes(step.retry.backoff)) {
+      add('SCHEMA', `${path}.retry.backoff`, `must be one of ${BACKOFF_KINDS.join(', ')}`)
+    }
+    for (const errorClass of step.retry.retryOn) {
+      if (!isErrorClass(errorClass)) {
+        add('SCHEMA', `${path}.retry.retryOn`, `unknown error class "${String(errorClass)}"`)
+      }
+    }
+
+    const needsArgv = step.kind === 'exec' || step.kind === 'transfer'
+    if (needsArgv) {
+      if (!step.argv || step.argv.length === 0) {
+        add('SCHEMA', `${path}.argv`, `is required for kind "${step.kind}"`)
+      }
+    } else if (step.argv !== undefined) {
+      add('SCHEMA', `${path}.argv`, `is forbidden for kind "${step.kind}"`)
+    }
+    step.argv?.forEach((arg, argIndex) => {
+      const argPath = `${path}.argv[${argIndex}]`
+      if (!nonEmpty(arg)) add('SCHEMA', argPath, 'must be a non-empty string')
+      else if (SHELL_METACHARACTERS.test(arg)) {
+        add('SCHEMA', argPath, 'must not contain shell metacharacters')
+      }
+    })
+
+    const needsFile = step.kind === 'write-file'
+    if (needsFile) {
+      if (!step.file) {
+        add('SCHEMA', `${path}.file`, `is required for kind "${step.kind}"`)
+      } else {
+        if (!nonEmpty(step.file.path)) add('SCHEMA', `${path}.file.path`, 'must be a non-empty string')
+        if (typeof step.file.content !== 'string') {
+          add('SCHEMA', `${path}.file.content`, 'must be a string')
+        }
+        if (step.file.mode !== undefined) {
+          if (!Number.isInteger(step.file.mode) || step.file.mode < 0 || step.file.mode > 0o777) {
+            add('SCHEMA', `${path}.file.mode`, 'must be an integer between 0 and 0o777')
+          }
+        }
+      }
+    } else if (step.file !== undefined) {
+      add('SCHEMA', `${path}.file`, `is forbidden for kind "${step.kind}"`)
+    }
+
+    step.dependsOn.forEach((dependency, depIndex) => {
+      if (!nonEmpty(dependency)) {
+        add('SCHEMA', `${path}.dependsOn[${depIndex}]`, 'must be a non-empty string')
+      }
+    })
+    for (const dependency of step.dependsOn) {
+      if (nonEmpty(dependency) && !localIds.has(dependency)) {
+        add(
+          'SCHEMA',
+          `${path}.dependsOn`,
+          base === 'cleanup'
+            ? `unknown cleanup step "${dependency}"`
+            : `unknown step "${dependency}"`,
+        )
+      }
+    }
+  })
 }
 
 /** Returns the first cycle as a path, or null when the graph is acyclic. */

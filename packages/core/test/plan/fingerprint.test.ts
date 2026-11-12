@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { canonicalJson, fingerprintPlan, matchFingerprint } from '../../src/plan/fingerprint'
-import { makePlan, NOW } from '../fixtures/plan'
+import { makePlan, makeStep, NOW } from '../fixtures/plan'
 
 describe('canonicalJson', () => {
   it('sorts object keys recursively', () => {
@@ -21,6 +21,17 @@ describe('fingerprintPlan', () => {
   it('changes when executable content changes', () => {
     const changed = makePlan({ steps: [{ ...makePlan().steps[0]!, argv: ['pg_dump', '-Fd'] }] })
     expect(fingerprintPlan(changed)).not.toBe(fingerprintPlan(makePlan()))
+  })
+
+  it('changes when only the cleanup graph changes', () => {
+    const withCleanup = makePlan({
+      cleanup: [makeStep({ stepId: 'stop', argv: ['pg_ctl', 'stop'], idempotencyKey: 'stop' })],
+    })
+    const otherCleanup = makePlan({
+      cleanup: [makeStep({ stepId: 'stop', argv: ['pg_ctl', 'stop', '-m', 'fast'], idempotencyKey: 'stop' })],
+    })
+    expect(fingerprintPlan(withCleanup)).not.toBe(fingerprintPlan(makePlan()))
+    expect(fingerprintPlan(withCleanup)).not.toBe(fingerprintPlan(otherCleanup))
   })
 })
 

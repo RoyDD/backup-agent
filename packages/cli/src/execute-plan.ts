@@ -265,6 +265,8 @@ function runNotAuthoritative(plan: Plan, result: RunPlanResult, reason: string):
     planId: plan.planId,
     status: 'lease-lost',
     steps: result.steps,
+    ...(result.cleanup === undefined ? {} : { cleanup: result.cleanup }),
+    ...(result.cleanupFailed === undefined ? {} : { cleanupFailed: result.cleanupFailed }),
     error: `terminal state was not persisted: ${reason}`,
     leaseLost: { phase: 'after-step', message: reason },
   }
@@ -431,6 +433,15 @@ export async function executePlan(
         leaseGuard: () => lost === null && !controller.signal.aborted,
         signal: controller.signal,
       })
+
+      // Cleanup that could not finish leaves the target in an unknown state; say
+      // so before the outcome is recorded, because the record cannot fix it.
+      if (result.cleanupFailed !== undefined && result.cleanupFailed.length > 0) {
+        deps.writeError(
+          `bkagent: cleanup did not complete for ${result.cleanupFailed.join(', ')}; ` +
+            'the target may still be running or need manual attention\n',
+        )
+      }
 
       // Terminal state, lineage and Outbox events commit in one short
       // transaction while the lease is still held. External work is already

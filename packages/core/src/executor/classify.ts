@@ -23,6 +23,9 @@ const MANUAL_SIGNATURES: readonly RegExp[] = [
   /role ".*" does not exist/i,
   /extension ".*" is not available/i,
   /recovery ended before configured recovery target/i,
+  // Emitted by the PITR target assertion once recovery ended without pausing at
+  // the target: the archive cannot supply it, so a retry cannot succeed.
+  /pitr target not reached/i,
   /requested recovery stop point is before consistent recovery point/i,
   /present in the manifest but not on disk/i,
   /has size \d+ on disk but size \d+ in the manifest/i,

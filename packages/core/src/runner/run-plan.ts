@@ -5,7 +5,7 @@ import type { ErrorClass } from '../domain/errors'
 import type { Plan, Step } from '../domain/plan'
 import type { Executor } from '../ports/executor'
 import { classifyRunResult } from '../executor/classify'
-import { evaluateAll, type CustomPredicate } from './predicate'
+import { evaluateAll, type CustomPredicate, type PredicateContext } from './predicate'
 
 export interface StepOutcome {
   stepId: string
@@ -47,6 +47,13 @@ export interface RunPlanResult {
   error?: string
   /** Present only when `status` is `lease-lost`. */
   leaseLost?: LeaseLost
+  /**
+   * Outcomes of the Plan's cleanup graph, present only when it ran (that is, the
+   * main graph failed). Cleanup failures never replace `failedStep`/`error`.
+   */
+  cleanup?: readonly StepOutcome[]
+  /** Cleanup step ids that failed; the target may need manual attention. */
+  cleanupFailed?: readonly string[]
 }
 
 /**
@@ -234,6 +241,157 @@ function leaseLostResult(
   }
 }
 
+interface CleanupRun {
+  readonly outcomes: readonly StepOutcome[]
+}
+
+/**
+ * Runs the Plan's cleanup graph after the main graph failed.
+ *
+ * Best-effort by design: every cleanup step is attempted even when an earlier one
+ * failed, a step whose preconditions no longer hold is skipped (so a repeated
+ * attempt is idempotent), and no checkpoint is written. A lease lost before a
+ * cleanup step stops the cleanup immediately: without authority nothing may be
+ * dispatched. Cleanup failures are reported, never allowed to mask the original
+ * failure that triggered them.
+ */
+async function runCleanupSteps(
+  plan: Plan,
+  options: RunPlanOptions,
+  predicateContext: PredicateContext,
+  sleep: (ms: number) => Promise<void>,
+): Promise<CleanupRun> {
+  const steps = plan.cleanup
+  if (steps === undefined || steps.length === 0) return { outcomes: [] }
+
+  const outcomes: StepOutcome[] = []
+
+  for (const step of topologicalOrder(steps)) {
+    const before = await checkLease(options.leaseGuard)
+    if (!before.held) {
+      outcomes.push(leaseLostStep(step, before.message, 0))
+      break
+    }
+
+    options.onStep?.({ type: 'start', stepId: step.stepId })
+    const preconditionsHold = await evaluateAll(step.preconditions, predicateContext)
+    if (!preconditionsHold) {
+      const skipped: StepOutcome = {
+        stepId: step.stepId,
+        status: 'skipped',
+        attempts: 0,
+        exitCode: null,
+        stdout: '',
+        stderr: '',
+        durationMs: 0,
+      }
+      outcomes.push(skipped)
+      options.onStep?.({ type: 'finish', stepId: step.stepId, outcome: skipped })
+      continue
+    }
+
+    if (step.kind === 'write-file') {
+      let outcome: StepOutcome
+      try {
+        if (!step.file) throw new Error('step has no file payload')
+        mkdirSync(dirname(step.file.path), { recursive: true })
+        writeFileSync(step.file.path, step.file.content, 'utf8')
+        if (step.file.mode !== undefined) chmodSync(step.file.path, step.file.mode)
+        const postconditionsHold = await evaluateAll(step.postconditions, predicateContext)
+        outcome = postconditionsHold
+          ? {
+              stepId: step.stepId,
+              status: 'succeeded',
+              attempts: 1,
+              exitCode: 0,
+              stdout: '',
+              stderr: '',
+              durationMs: 0,
+            }
+          : failure(step, 'permanent', 'postcondition failed')
+      } catch (error) {
+        outcome = failure(step, 'permanent', (error as Error).message)
+      }
+      outcomes.push(outcome)
+      options.onStep?.({ type: 'finish', stepId: step.stepId, outcome })
+      continue
+    }
+
+    if (step.argv === undefined) {
+      const outcome = failure(step, 'permanent', 'step has no argv')
+      outcomes.push(outcome)
+      options.onStep?.({ type: 'finish', stepId: step.stepId, outcome })
+      continue
+    }
+
+    let outcome: StepOutcome | undefined
+    for (let attempt = 1; attempt <= step.retry.maxAttempts; attempt += 1) {
+      const result = await options.executor.run(step.argv, {
+        cwd: options.cwd,
+        env: options.env,
+        timeoutMs: step.timeoutMs,
+        signal: options.signal,
+      })
+
+      if (result.exitCode === 0 && !result.timedOut) {
+        const postconditionsHold = await evaluateAll(step.postconditions, predicateContext)
+        outcome = postconditionsHold
+          ? {
+              stepId: step.stepId,
+              status: 'succeeded',
+              attempts: attempt,
+              exitCode: result.exitCode,
+              stdout: result.stdout,
+              stderr: result.stderr,
+              durationMs: result.durationMs,
+            }
+          : failure(
+              step,
+              'permanent',
+              'postcondition failed',
+              result.stdout,
+              result.stderr,
+              result.exitCode,
+              attempt,
+              result.durationMs,
+            )
+        break
+      }
+
+      const errorClass = classifyRunResult(result)
+      const aborted = options.signal?.aborted === true
+      const retryable = !aborted && step.retry.retryOn.includes(errorClass)
+      if (!retryable || attempt === step.retry.maxAttempts) {
+        outcome = failure(
+          step,
+          errorClass,
+          errorClass === 'transient' ? 'retry budget exhausted' : 'cleanup step failed',
+          result.stdout,
+          result.stderr,
+          result.exitCode,
+          attempt,
+          result.durationMs,
+        )
+        break
+      }
+      await sleep(backoffDelay(step.retry, attempt))
+    }
+
+    if (!outcome) {
+      outcome = failure(step, 'permanent', 'retry loop produced no outcome')
+    }
+    outcomes.push(outcome)
+    options.onStep?.({ type: 'finish', stepId: step.stepId, outcome })
+
+    // A lease lost during cleanup ends the cleanup; the terminal write is
+    // refused later by the fence and live-lease guards.
+    const after = await checkLease(options.leaseGuard)
+    if (!after.held) break
+  }
+
+  return { outcomes }
+}
+
 /**
  * Executes a validated Plan step by step. Preconditions are re-evaluated at
  * execution time; transient failures are retried with the step's policy and
@@ -261,6 +419,30 @@ export async function runPlan(plan: Plan, options: RunPlanOptions): Promise<RunP
   }
 
   if (!options.resume) saveCompleted(options.stateDir, plan.planId, completed, now())
+
+  /**
+   * Terminal failure: the cleanup graph runs before the result is returned, so a
+   * caller never has to remember compensation. Cleanup failures are reported
+   * alongside the original failure instead of replacing it.
+   */
+  const fail = async (fields: {
+    failedStep: string
+    errorClass: ErrorClass
+    error?: string
+  }): Promise<RunPlanResult> => {
+    const cleanup = await runCleanupSteps(plan, options, predicateContext, sleep)
+    const cleanupFailed = cleanup.outcomes
+      .filter((outcome) => outcome.status === 'failed')
+      .map((outcome) => outcome.stepId)
+    return {
+      planId: plan.planId,
+      status: 'failed',
+      steps: outcomes,
+      ...fields,
+      ...(cleanup.outcomes.length === 0 ? {} : { cleanup: cleanup.outcomes }),
+      ...(cleanupFailed.length === 0 ? {} : { cleanupFailed }),
+    }
+  }
 
   for (const step of topologicalOrder(plan.steps)) {
     if (completed.has(step.stepId)) {
@@ -308,14 +490,11 @@ export async function runPlan(plan: Plan, options: RunPlanOptions): Promise<RunP
       const outcome = failure(step, 'permanent', 'precondition failed')
       outcomes.push(outcome)
       options.onStep?.({ type: 'finish', stepId: step.stepId, outcome })
-      return {
-        planId: plan.planId,
-        status: 'failed',
-        steps: outcomes,
+      return await fail({
         failedStep: step.stepId,
         errorClass: 'permanent',
         error: 'precondition failed',
-      }
+      })
     }
 
     if (step.kind === 'write-file') {
@@ -356,14 +535,11 @@ export async function runPlan(plan: Plan, options: RunPlanOptions): Promise<RunP
       outcomes.push(outcome)
       options.onStep?.({ type: 'finish', stepId: step.stepId, outcome })
       if (outcome.status !== 'succeeded') {
-        return {
-          planId: plan.planId,
-          status: 'failed',
-          steps: outcomes,
+        return await fail({
           failedStep: step.stepId,
           errorClass: outcome.errorClass ?? 'permanent',
-          error: outcome.message,
-        }
+          ...(outcome.message === undefined ? {} : { error: outcome.message }),
+        })
       }
       completed.add(step.stepId)
       saveCompleted(options.stateDir, plan.planId, completed, now())
@@ -373,14 +549,11 @@ export async function runPlan(plan: Plan, options: RunPlanOptions): Promise<RunP
     if (step.argv === undefined) {
       const outcome = failure(step, 'permanent', 'step has no argv')
       outcomes.push(outcome)
-      return {
-        planId: plan.planId,
-        status: 'failed',
-        steps: outcomes,
+      return await fail({
         failedStep: step.stepId,
         errorClass: 'permanent',
         error: 'step has no argv',
-      }
+      })
     }
 
     let outcome: StepOutcome | undefined
@@ -513,14 +686,11 @@ export async function runPlan(plan: Plan, options: RunPlanOptions): Promise<RunP
     options.onStep?.({ type: 'finish', stepId: step.stepId, outcome })
 
     if (outcome.status !== 'succeeded') {
-      return {
-        planId: plan.planId,
-        status: 'failed',
-        steps: outcomes,
+      return await fail({
         failedStep: step.stepId,
         errorClass: outcome.errorClass ?? 'permanent',
-        error: outcome.message,
-      }
+        ...(outcome.message === undefined ? {} : { error: outcome.message }),
+      })
     }
 
     completed.add(step.stepId)

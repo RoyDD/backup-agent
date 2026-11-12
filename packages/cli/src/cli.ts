@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { userInfo } from 'node:os'
 import { join } from 'node:path'
 import { createServer } from 'node:http'
@@ -754,6 +754,16 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
         const connection = parseDsn(dsn)
         const instance = await postgresEngine.probe(executor, connection)
         const dataDirectory = values['data-dir']
+        // A postmaster.pid means a server is still running on this data directory,
+        // typically from an earlier attempt whose target assertion failed. Refuse
+        // with the remedy instead of letting pg_ctl fail opaquely.
+        if (existsSync(join(dataDirectory, 'postmaster.pid'))) {
+          writeError(
+            `bkagent: ${dataDirectory} still has postmaster.pid: a server is running on it. ` +
+              `Stop it first (pg_ctl -D ${dataDirectory} stop -m fast), then re-run pitr.\n`,
+          )
+          return 2
+        }
         let existingAutoConf = ''
         try {
           existingAutoConf = readFileSync(join(dataDirectory, 'postgresql.auto.conf'), 'utf8')

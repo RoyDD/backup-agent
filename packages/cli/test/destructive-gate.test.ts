@@ -305,6 +305,29 @@ describe('destructive plan gate (all command paths)', () => {
     expect(destructiveCalls(executor, 'pgbackrest')).toBe(0)
   })
 
+  it('pitr refuses a data directory with a live postmaster.pid before any pg_ctl call', async () => {
+    const w = await workspace()
+    await registerAsset(w.db, asset(`pitr:${w.dataDir}`))
+    await mkdir(w.dataDir, { recursive: true })
+    await writeFile(join(w.dataDir, 'postmaster.pid'), '1234\n')
+    const executor = probeExecutor()
+    const out = capture()
+
+    const code = await runCli(
+      [
+        'pitr', '--dsn', DSN, '--data-dir', w.dataDir, '--port', '55416', '--log', w.logFile,
+        '--restore-command', 'wal-g wal-fetch %f %p', '--target-time', '2026-01-01T00:00:00Z',
+        '--yes', '--db', w.db,
+      ],
+      { executor, stdout: out.write, stderr: out.writeError, env: { USER: 'roy' } },
+    )
+
+    expect(code).toBe(2)
+    expect(out.stderr.join('')).toContain('postmaster.pid')
+    expect(out.stderr.join('')).toContain('pg_ctl')
+    expect(destructiveCalls(executor, 'pg_ctl')).toBe(0)
+  })
+
   it('gates a plain SQL restore even without --clean because input may contain destructive SQL', async () => {
     const w = await workspace()
     await writeFile(w.input, 'DROP TABLE users;\n')

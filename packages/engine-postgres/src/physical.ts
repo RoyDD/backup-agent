@@ -217,7 +217,18 @@ function pitrTargetAssertionSql(target: ResolvedPitrTarget): string {
     'pg_last_wal_replay_lsn() is not null',
     ...pitrTargetEvidence(target),
   ]
-  return `select 1 / (case when ${conditions.join(' and ')} then 1 else 0 end)`
+  // Recovery that has ended without pausing at the target can never reach it,
+  // so that case fails permanently with an explicit message instead of being
+  // retried as "still replaying" until the budget runs out. The message is built
+  // from a non-constant expression: a constant cast in an untaken CASE branch is
+  // folded at plan time and would fail every query. Replay-in-progress keeps the
+  // division-by-zero probe that the retry policy treats as transient.
+  return (
+    'select case when not pg_is_in_recovery() then ' +
+    "cast(concat('pitr target not reached: recovery ended before the configured target (" +
+    "last replay lsn ', coalesce(pg_last_wal_replay_lsn()::text, 'none'), ')') as int) " +
+    `else 1 / (case when ${conditions.join(' and ')} then 1 else 0 end) end`
+  )
 }
 
 /**
@@ -278,6 +289,14 @@ export function buildPitrRestorePlan(request: PitrRestoreRequest, ctx: PlanBuild
     retryOn: ['transient'] as const,
   }
 
+  /**
+   * Written only after `pg_ctl start` succeeded, and removed by cleanup. Its
+   * presence is the precise proof that the running instance was started by this
+   * Plan, so cleanup never stops a server it did not start (for example one that
+   * made `start-instance` fail its precondition).
+   */
+  const startMarker = `${request.dataDirectory}/.bkagent-pitr-started`
+
   const steps: Step[] = [
     {
       stepId: 'write-recovery-config',
@@ -318,7 +337,9 @@ export function buildPitrRestorePlan(request: PitrRestoreRequest, ctx: PlanBuild
         `-p ${request.port}`,
         'start',
       ],
-      preconditions: [],
+      // A live server from an earlier attempt must be stopped by the operator first;
+      // starting over it fails with an opaque pg_ctl error.
+      preconditions: [{ kind: 'pathAbsent', path: `${request.dataDirectory}/postmaster.pid` }],
       postconditions: [],
       retry: DEFAULT_RETRY_POLICY,
       checkpoint: 'after',
@@ -326,9 +347,24 @@ export function buildPitrRestorePlan(request: PitrRestoreRequest, ctx: PlanBuild
       timeoutMs: 240_000,
     },
     {
+      stepId: 'write-start-marker',
+      kind: 'write-file',
+      dependsOn: ['start-instance'],
+      file: {
+        path: startMarker,
+        content: `started:${ctx.ticketId}\n`,
+        mode: 0o600,
+      },
+      preconditions: [],
+      postconditions: [],
+      retry: { ...DEFAULT_RETRY_POLICY, retryOn: [] },
+      checkpoint: 'after',
+      idempotencyKey: `pitr-start-marker:${ctx.configDigest}`,
+    },
+    {
       stepId: 'assert-recovery-target',
       kind: 'exec',
-      dependsOn: ['start-instance'],
+      dependsOn: ['write-start-marker'],
       argv: [...psql, pitrTargetAssertionSql(target)],
       preconditions: [],
       postconditions: [],
@@ -338,6 +374,31 @@ export function buildPitrRestorePlan(request: PitrRestoreRequest, ctx: PlanBuild
       timeoutMs: 120_000,
     },
   ]
+
+  /**
+   * Stops the instance this Plan started. Used as the requested terminal action
+   * for `shutdown` and as the failure cleanup for every action: a failed PITR must
+   * not leave a half-recovered server occupying the data directory, or the next
+   * attempt cannot start. Skipped when no `postmaster.pid` exists, so it is safe
+   * to run after a stop that already succeeded.
+   */
+  const stopStep = (
+    stepId: string,
+    idempotencyKey: string,
+    options: { preconditions?: Step['preconditions']; checkpoint?: Step['checkpoint'] } = {},
+  ): Step => ({
+    stepId,
+    kind: 'exec',
+    dependsOn: [],
+    argv: ['pg_ctl', '-D', request.dataDirectory, 'stop', '-m', 'fast', '-w', '-t', '60'],
+    preconditions: options.preconditions ?? [],
+    postconditions: [{ kind: 'pathAbsent', path: `${request.dataDirectory}/postmaster.pid` }],
+    retry: { ...DEFAULT_RETRY_POLICY, maxAttempts: 2 },
+    checkpoint: options.checkpoint ?? 'after',
+    idempotencyKey,
+    timeoutMs: 90_000,
+  })
+
 
   const verifyData = (dependsOn: string): Step => ({
     stepId: 'verify-data',
@@ -382,29 +443,10 @@ export function buildPitrRestorePlan(request: PitrRestoreRequest, ctx: PlanBuild
     if (request.verifySql !== undefined) steps.push(verifyData('assert-recovery-target'))
   } else {
     if (request.verifySql !== undefined) steps.push(verifyData('assert-recovery-target'))
+    const stop = stopStep('stop-instance', `pitr-stop:${ctx.configDigest}`)
     steps.push({
-      stepId: 'stop-instance',
-      kind: 'exec',
+      ...stop,
       dependsOn: [request.verifySql === undefined ? 'assert-recovery-target' : 'verify-data'],
-      argv: [
-        'pg_ctl',
-        '-D',
-        request.dataDirectory,
-        'stop',
-        '-m',
-        'fast',
-        '-w',
-        '-t',
-        '60',
-      ],
-      preconditions: [],
-      postconditions: [
-        { kind: 'pathAbsent', path: `${request.dataDirectory}/postmaster.pid` },
-      ],
-      retry: DEFAULT_RETRY_POLICY,
-      checkpoint: 'after',
-      idempotencyKey: `pitr-stop:${ctx.configDigest}`,
-      timeoutMs: 90_000,
     })
   }
 
@@ -417,6 +459,36 @@ export function buildPitrRestorePlan(request: PitrRestoreRequest, ctx: PlanBuild
     targetId: asTargetId(`pitr:${request.dataDirectory}`),
     fingerprint: fingerprintFor(request.connection, ctx),
     steps,
+    // Failure must not leave the instance running: a paused or half-replayed server
+    // holds the data directory, and `pg_ctl start` on the next attempt would fail.
+    // The marker precondition keeps cleanup from touching a server this Plan never
+    // started, and clearing the marker keeps a later plan from stopping a reused
+    // data directory's new instance.
+    cleanup: [
+      stopStep('stop-instance-on-failure', `pitr-cleanup-stop:${ctx.configDigest}`, {
+        // Both must hold: the marker proves this Plan started the instance, and
+        // the PID file proves there is still something to stop. `pg_ctl stop` on
+        // an already-stopped directory exits non-zero ("PID file does not exist"),
+        // which would otherwise be reported as a failed cleanup.
+        preconditions: [
+          { kind: 'fileExists', path: startMarker },
+          { kind: 'fileExists', path: `${request.dataDirectory}/postmaster.pid` },
+        ],
+        checkpoint: 'none',
+      }),
+      {
+        stepId: 'clear-start-marker',
+        kind: 'exec',
+        dependsOn: ['stop-instance-on-failure'],
+        argv: ['rm', '-f', startMarker],
+        preconditions: [{ kind: 'fileExists', path: startMarker }],
+        postconditions: [{ kind: 'pathAbsent', path: startMarker }],
+        retry: { ...DEFAULT_RETRY_POLICY, maxAttempts: 1 },
+        checkpoint: 'none',
+        idempotencyKey: `pitr-cleanup-marker:${ctx.configDigest}`,
+        timeoutMs: 30_000,
+      },
+    ],
     resources: { estimatedBytes: 0, estimatedDurationMs: 0, concurrencySlots: 1 },
     risk: 'destructive',
   }

@@ -23,10 +23,10 @@ recoverableWindow = [backup.stopLSN, lastArchivedLSN] ∩ retentionWindow
 2. 确认基础备份目录与 `restore_command`（`cp` 或 `wal-g wal-fetch %f %p`）。
 3. 调用 `bkagent pitr`（或 `pgbackrest-restore --target-type time`）：
    - 写入恢复 GUC 与 `recovery.signal`；
-   - 启动实例并等待 promote；
-   - 断言 `pg_is_in_recovery() = false`；
+   - 以 `recovery_target_action = pause` 启动实例，断言已暂停在目标点（LSN/时间附额外证据）；
+   - 按 `--action` 显式执行 `pg_ctl promote`、保持暂停或 `pg_ctl stop`；
    - 执行业务校验 SQL。
-4. 校验通过后再切换流量；失败时保留实例目录与日志用于取证。
+4. 校验通过后再切换流量。目标未达成或任一步失败时，计划的 cleanup 会停止**本次启动的**实例（`pg_ctl stop -m fast`，以 `.bkagent-pitr-started` 标记为前置条件），数据目录与日志保留用于取证；修正参数后可直接重跑。若 CLI 报告 `cleanup did not complete`，先手工停止实例再重试。
 
 ## 禁止
 

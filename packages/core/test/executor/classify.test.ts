@@ -18,6 +18,7 @@ describe('extractSqlState', () => {
 
 describe('classifyRunResult — catalog signatures', () => {
   const cases: ReadonlyArray<[string, string, 'transient' | 'permanent' | 'manual']> = [
+    ['PITR target missed', 'ERROR:  invalid input syntax for type integer: "pitr target not reached: recovery ended before the configured target"', 'manual'],
     ['E-01 wrong password', 'FATAL:  password authentication failed for user "postgres"', 'manual'],
     ['E-04 pg_hba', 'FATAL: no pg_hba.conf entry for host "10.0.0.1"', 'manual'],
     ['E-07 disk full', 'pg_dump: error: could not write to output file: No space left on device', 'manual'],
