@@ -22,6 +22,8 @@ pnpm --filter @backup-agent/knowledge eval --expand none --json /tmp/eval-none.j
 pnpm --filter @backup-agent/knowledge eval --mode bm25          # 单轮基线
 pnpm --filter @backup-agent/knowledge eval --mode expand-only   # 对照：只扩词、最后打一次分
 pnpm --filter @backup-agent/knowledge eval --mode sag2 --rounds 2 --diversify off
+pnpm --filter @backup-agent/knowledge scorer --scorer command --scorer-arg python3 --scorer-arg rerank.py
+pnpm --filter @backup-agent/knowledge ask "归档失败" --scorer http --scorer-url http://127.0.0.1:8080/score --scorer-key-env JEV_API_KEY
 ```
 
 `ask` 输出 `sourceId#ordinal [version] headingPath` 与得分，可直接定位到原文段落。
@@ -46,6 +48,27 @@ pnpm --filter @backup-agent/knowledge eval --mode sag2 --rounds 2 --diversify of
 pgBackRest 的 HTML 没有 `h1–h6`（用 `div.sectionN-title`），抓取脚本会按 `sectionN → h(N+1)` 合成标题，否则整篇会退化成命令转录。
 
 注意：`CHUNK_POLICY` 或分块代码变化会移动 `ordinal`，`eval/questions.jsonl` 里以 `passage` 固定的 gold 需要重校；优先用 `heading` + `contains` 声明 gold。
+
+## 打分后端
+
+SAG2 的准确率来自「这段证据在当前上下文里是否必要」的判定，论文里由 JEV（模型调用）完成。这里把它做成端口 `src/ports/scorer.ts`：
+
+| 后端 | 说明 |
+|---|---|
+| `lexical`（默认） | 确定性特征混合：coverage / identifier / heading / lex；离线、零依赖 |
+| `command` | 外部进程，argv-only（`shell: false`），stdin 一个 JSON 请求、stdout `{"scores": [...]}` |
+| `http` | 批量 POST 同一 JSON 契约；key 只从 `--scorer-key-env` 指定的环境变量读取 |
+
+**fail-closed**：缺 argv、缺 url、未知后端 → 退出码 2 并说明原因，绝不静默退回 `lexical`。`ask`/`eval` 开跑前先 `health()` 探测，`scorer` 子命令可单独探。
+
+命令后端的最小 shim（换成任何本地模型都一样）：
+
+```js
+// rerank.py 的 JS 等价物：读 stdin 的 {question, context, candidates}，
+// 写 stdout 的 {"scores": [每个候选一个数]}
+```
+
+候选里带 `text` 与 `headingPath`，`features` 是 lexical 特征（语义后端可以忽略）。模型接入只换后端，`pipeline.ts` 不动。
 
 ## 评测
 

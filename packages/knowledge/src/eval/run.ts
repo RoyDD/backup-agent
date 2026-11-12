@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import type { DatabaseSync } from 'node:sqlite'
 
+import type { ScorerPort } from '../ports/scorer'
 import { runPipeline, type RetrievalMode } from '../retrieval/pipeline'
 import type { EvalQuestion, EvalSummary, GoldRef, QuestionResult, ResolvedGold } from '../types'
 
@@ -97,9 +98,14 @@ export interface EvalOptions {
   seedK?: number
   termsPerRound?: number
   diversify?: boolean
+  /** Scoring backend; defaults to the deterministic lexical blend. */
+  scorer?: ScorerPort
 }
 
-export function runEval(db: DatabaseSync, options: EvalOptions): { summary: EvalSummary; results: QuestionResult[] } {
+export async function runEval(
+  db: DatabaseSync,
+  options: EvalOptions,
+): Promise<{ summary: EvalSummary; results: QuestionResult[] }> {
   const questions = loadQuestions(options.questionsPath)
   const k = options.k ?? Math.max(...K_LIST)
   const results: QuestionResult[] = []
@@ -115,7 +121,7 @@ export function runEval(db: DatabaseSync, options: EvalOptions): { summary: Eval
     })
 
     const goldIds = new Set(gold.flatMap((entry) => entry.passageIds))
-    const pipeline = runPipeline(db, question.question, {
+    const pipeline = await runPipeline(db, question.question, {
       mode,
       k: Math.max(k, 10),
       ...(options.sources ? { sources: options.sources } : {}),
@@ -124,6 +130,7 @@ export function runEval(db: DatabaseSync, options: EvalOptions): { summary: Eval
       ...(options.seedK === undefined ? {} : { seedK: options.seedK }),
       ...(options.termsPerRound === undefined ? {} : { termsPerRound: options.termsPerRound }),
       ...(options.diversify === undefined ? {} : { diversify: options.diversify }),
+      ...(options.scorer === undefined ? {} : { scorer: options.scorer }),
     })
     latencies.push(pipeline.trace.ms)
     const hits = pipeline.hits.map((hit) => hit.passageId)
@@ -195,6 +202,7 @@ export function runEval(db: DatabaseSync, options: EvalOptions): { summary: Eval
       settings: {
         k,
         retrieval: mode,
+        scorer: options.scorer?.id ?? 'lexical',
         rounds: mode === 'sag2' ? (options.rounds ?? 2) : 0,
         diversify: mode === 'sag2' ? options.diversify === true : false,
         expand: options.expand === false ? 'none' : 'aliases',

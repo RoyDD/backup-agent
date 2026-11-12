@@ -48,20 +48,20 @@ afterAll(() => {
 })
 
 describe('runPipeline', () => {
-  it('single-round bm25 cannot reach a passage that shares no surface term with the question', () => {
+  it('single-round bm25 cannot reach a passage that shares no surface term with the question', async () => {
     const db = openIndex(dbPath)
     try {
-      const { hits } = runPipeline(db, 'archiving failures stop the recovery window', { mode: 'bm25', k: 3 })
+      const { hits } = await runPipeline(db, 'archiving failures stop the recovery window', { mode: 'bm25', k: 3 })
       expect(hits.map((hit) => hit.headingPath)).toEqual(['Archive failures'])
     } finally {
       db.close()
     }
   })
 
-  it('an expansion round reaches the second hop through a term found in the first passage', () => {
+  it('an expansion round reaches the second hop through a term found in the first passage', async () => {
     const db = openIndex(dbPath)
     try {
-      const { hits, trace } = runPipeline(db, 'archiving failures stop the recovery window', {
+      const { hits, trace } = await runPipeline(db, 'archiving failures stop the recovery window', {
         mode: 'sag2',
         rounds: 1,
         k: 3,
@@ -75,22 +75,22 @@ describe('runPipeline', () => {
     }
   })
 
-  it('is deterministic: the same question always yields the same ranking', () => {
+  it('is deterministic: the same question always yields the same ranking', async () => {
     const db = openIndex(dbPath)
     try {
       const options = { mode: 'sag2' as const, rounds: 2, k: 3 }
-      const first = runPipeline(db, 'archiver queue never drains', options).hits.map((hit) => hit.passageId)
-      const second = runPipeline(db, 'archiver queue never drains', options).hits.map((hit) => hit.passageId)
+      const first = (await runPipeline(db, 'archiver queue never drains', options)).hits.map((hit) => hit.passageId)
+      const second = (await runPipeline(db, 'archiver queue never drains', options)).hits.map((hit) => hit.passageId)
       expect(second).toEqual(first)
     } finally {
       db.close()
     }
   })
 
-  it('keeps expansion terms out of the pool when the question is already precise', () => {
+  it('keeps expansion terms out of the pool when the question is already precise', async () => {
     const db = openIndex(dbPath)
     try {
-      const { hits } = runPipeline(db, 'repository encryption keys per stanza', { mode: 'sag2', rounds: 2, k: 3 })
+      const { hits } = await runPipeline(db, 'repository encryption keys per stanza', { mode: 'sag2', rounds: 2, k: 3 })
       expect(hits[0]?.headingPath).toBe('Unrelated topic')
     } finally {
       db.close()

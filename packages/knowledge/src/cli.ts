@@ -2,18 +2,24 @@
 /**
  * bkagent knowledge — evidence retrieval over the PG backup/recovery corpus.
  *
- * Every command is deterministic and offline: no embeddings, no model calls.
- * `ask` returns passages, never an answer; interpretation belongs to the agent
- * layer, which keeps this package free of business semantics.
+ * Every command is deterministic and offline by default: no embeddings, no
+ * model calls. `ask` returns passages, never an answer; interpretation belongs
+ * to the agent layer, which keeps this package free of business semantics.
+ *
+ * A semantic reranker can be enabled explicitly (`--scorer command|http`); the
+ * backend is negotiated before a run and a bad configuration is a usage error,
+ * not a silent fallback to the lexical blend.
  */
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import { parseArgs } from 'node:util'
+import { parseArgs, type ParseArgsConfig } from 'node:util'
 
-import { PACKAGE_ROOT, buildIndex, openIndex, readMeta, DEFAULT_DB_PATH, DEFAULT_CORPUS_DIR } from './index'
+import { buildIndex, openIndex, readMeta, DEFAULT_DB_PATH, DEFAULT_CORPUS_DIR, PACKAGE_ROOT } from './index'
 import type { BuildStats } from './index'
-import { runPipeline, type RetrievalMode } from './retrieval/pipeline'
 import { loadQuestions, runEval } from './eval/run'
+import type { ScorerPort } from './ports/scorer'
+import { createScorer, type ScorerBackend } from './scorers'
+import { runPipeline, type RetrievalMode } from './retrieval/pipeline'
 
 const USAGE = `bkagent knowledge — PostgreSQL backup/recovery evidence base
 
@@ -22,11 +28,44 @@ Usage:
   bkagent knowledge ask <question> [--k N] [--db <path>] [--json] [--source <id>]...
                                   [--expand aliases|none] [--mode bm25|sag2|expand-only]
                                   [--rounds N] [--seed-k N] [--terms N] [--diversify on|off]
+                                  [--scorer lexical|command|http]
+                                  [--scorer-arg <argv>]... [--scorer-url <url>]
+                                  [--scorer-model <id>] [--scorer-key-env <VAR>] [--scorer-timeout <ms>]
   bkagent knowledge eval [--questions <path>] [--k N] [--db <path>] [--json <out>]
                          [--expand aliases|none] [--mode bm25|sag2|expand-only] [--rounds N]
-                         [--seed-k N] [--terms N] [--diversify on|off]
+                         [--seed-k N] [--terms N] [--diversify on|off] [--scorer ...]
+  bkagent knowledge scorer [--scorer lexical|command|http] [same scorer flags]
   bkagent knowledge stats [--db <path>]
 `
+
+const SCORER_OPTIONS = {
+  scorer: { type: 'string', default: 'lexical' },
+  'scorer-arg': { type: 'string', multiple: true },
+  'scorer-url': { type: 'string' },
+  'scorer-model': { type: 'string' },
+  'scorer-key-env': { type: 'string' },
+  'scorer-timeout': { type: 'string' },
+} satisfies ParseArgsConfig['options']
+
+interface ScorerFlags {
+  scorer?: string | undefined
+  'scorer-arg'?: string[] | undefined
+  'scorer-url'?: string | undefined
+  'scorer-model'?: string | undefined
+  'scorer-key-env'?: string | undefined
+  'scorer-timeout'?: string | undefined
+}
+
+function scorerFrom(flags: ScorerFlags): ScorerPort {
+  return createScorer({
+    backend: (flags.scorer ?? 'lexical') as ScorerBackend,
+    argv: flags['scorer-arg'] ?? [],
+    ...(flags['scorer-url'] === undefined ? {} : { url: flags['scorer-url'] }),
+    ...(flags['scorer-model'] === undefined ? {} : { model: flags['scorer-model'] }),
+    ...(flags['scorer-key-env'] === undefined ? {} : { apiKeyEnv: flags['scorer-key-env'] }),
+    ...(flags['scorer-timeout'] === undefined ? {} : { timeoutMs: Number(flags['scorer-timeout']) }),
+  })
+}
 
 function formatStats(stats: BuildStats): string {
   return [
@@ -54,7 +93,7 @@ function commandIndex(args: string[]): number {
   return 0
 }
 
-function commandAsk(args: string[]): number {
+async function commandAsk(args: string[]): Promise<number> {
   const { values, positionals } = parseArgs({
     args,
     allowPositionals: true,
@@ -69,6 +108,7 @@ function commandAsk(args: string[]): number {
       'seed-k': { type: 'string' },
       terms: { type: 'string' },
       diversify: { type: 'string', default: 'off' },
+      ...SCORER_OPTIONS,
     },
   })
   const question = positionals.join(' ').trim()
@@ -77,9 +117,16 @@ function commandAsk(args: string[]): number {
     return 2
   }
 
+  const scorer = scorerFrom(values)
+  const health = await scorer.health()
+  if (!health.ok) {
+    process.stderr.write(`error: scorer "${scorer.id}" is not available: ${health.detail}\n`)
+    return 2
+  }
+
   const db = openIndex(values.db ?? DEFAULT_DB_PATH)
   try {
-    const { hits, trace } = runPipeline(db, question, {
+    const { hits, trace } = await runPipeline(db, question, {
       k: Number(values.k),
       ...(values.source ? { sources: values.source } : {}),
       expandAliases: values.expand !== 'none',
@@ -88,13 +135,15 @@ function commandAsk(args: string[]): number {
       ...(values['seed-k'] ? { seedK: Number(values['seed-k']) } : {}),
       ...(values.terms ? { termsPerRound: Number(values.terms) } : {}),
       diversify: values.diversify === 'on',
+      scorer,
     })
     if (values.json) {
       process.stdout.write(`${JSON.stringify({ question, hits, trace }, null, 2)}\n`)
       return 0
     }
     process.stdout.write(
-      `mode ${trace.mode} · rounds ${trace.rounds} · candidates ${trace.candidates} · ${trace.ms} ms\n`,
+      `mode ${trace.mode} · scorer ${trace.scorer} · rounds ${trace.rounds} · ` +
+        `candidates ${trace.candidates} · ${trace.ms} ms\n`,
     )
     if (hits.length === 0) {
       process.stdout.write('no evidence found\n')
@@ -113,12 +162,12 @@ function commandAsk(args: string[]): number {
   }
 }
 
-function commandEval(args: string[]): number {
+async function commandEval(args: string[]): Promise<number> {
   const { values } = parseArgs({
     args,
     options: {
       db: { type: 'string' },
-      questions: { type: 'string', default: join(PACKAGE_ROOT, 'eval', 'questions.jsonl') },
+      questions: { type: 'string' },
       k: { type: 'string', default: '10' },
       json: { type: 'string' },
       expand: { type: 'string', default: 'aliases' },
@@ -127,14 +176,22 @@ function commandEval(args: string[]): number {
       'seed-k': { type: 'string' },
       terms: { type: 'string' },
       diversify: { type: 'string', default: 'off' },
+      ...SCORER_OPTIONS,
     },
   })
+  const questionsPath = values.questions ?? join(PACKAGE_ROOT, 'eval', 'questions.jsonl')
+  const scorer = scorerFrom(values)
+  const health = await scorer.health()
+  if (!health.ok) {
+    process.stderr.write(`error: scorer "${scorer.id}" is not available: ${health.detail}\n`)
+    return 2
+  }
 
   const db = openIndex(values.db ?? DEFAULT_DB_PATH)
   try {
-    const total = loadQuestions(values.questions).length
-    const { summary, results } = runEval(db, {
-      questionsPath: values.questions,
+    const total = loadQuestions(questionsPath).length
+    const { summary, results } = await runEval(db, {
+      questionsPath,
       k: Number(values.k),
       expand: values.expand !== 'none',
       mode: values.mode as RetrievalMode,
@@ -142,6 +199,7 @@ function commandEval(args: string[]): number {
       ...(values['seed-k'] ? { seedK: Number(values['seed-k']) } : {}),
       ...(values.terms ? { termsPerRound: Number(values.terms) } : {}),
       diversify: values.diversify === 'on',
+      scorer,
     })
 
     const pct = (value: number): string => `${(value * 100).toFixed(2)}%`
@@ -149,7 +207,8 @@ function commandEval(args: string[]): number {
       `questions ${summary.questions} (${total} loaded)`,
       `unresolved gold refs ${summary.unresolvedGold.length}`,
       `retrieval ${String(summary.settings['retrieval'])} · rounds ${String(summary.settings['rounds'])} · ` +
-        `expand ${String(summary.settings['expand'])} · diversify ${String(summary.settings['diversify'])}`,
+        `expand ${String(summary.settings['expand'])} · diversify ${String(summary.settings['diversify'])} · ` +
+        `scorer ${String(summary.settings['scorer'])}`,
       `latency mean ${summary.latency.mean.toFixed(1)} ms · p50 ${summary.latency.p50} ms · p95 ${summary.latency.p95} ms`,
       `R@1 ${pct(summary.recallAt['1'] ?? 0)}  R@2 ${pct(summary.recallAt['2'] ?? 0)}  ` +
         `R@5 ${pct(summary.recallAt['5'] ?? 0)}  R@10 ${pct(summary.recallAt['10'] ?? 0)}  MRR@10 ${summary.mrrAt10.toFixed(4)}`,
@@ -188,17 +247,29 @@ function commandEval(args: string[]): number {
   }
 }
 
+async function commandScorer(args: string[]): Promise<number> {
+  const { values } = parseArgs({ args, options: { ...SCORER_OPTIONS } })
+  const scorer = scorerFrom(values)
+  const health = await scorer.health()
+  process.stdout.write(`${scorer.id}: ${health.ok ? 'ready' : 'unavailable'} — ${health.detail}\n`)
+  return health.ok ? 0 : 1
+}
+
 function commandStats(args: string[]): number {
   const { values } = parseArgs({ args, options: { db: { type: 'string' } } })
   const db = openIndex(values.db ?? DEFAULT_DB_PATH)
   try {
     const meta = readMeta(db)
     const rows = db
-      .prepare('SELECT source_id, version, count(*) AS passages, sum(chars) AS chars FROM passage GROUP BY source_id, version ORDER BY source_id')
+      .prepare(
+        'SELECT source_id, version, count(*) AS passages, sum(chars) AS chars FROM passage GROUP BY source_id, version ORDER BY source_id',
+      )
       .all() as Array<{ source_id: string; version: string; passages: number; chars: number }>
     const lines = [Object.entries(meta).map(([key, value]) => `${key}=${value}`).join('  '), '']
     for (const row of rows) {
-      lines.push(`${row.source_id.padEnd(30)} ${row.version.padEnd(14)} ${String(row.passages).padStart(5)} passages  ${row.chars} chars`)
+      lines.push(
+        `${row.source_id.padEnd(30)} ${row.version.padEnd(14)} ${String(row.passages).padStart(5)} passages  ${row.chars} chars`,
+      )
     }
     process.stdout.write(`${lines.join('\n')}\n`)
     return 0
@@ -207,24 +278,35 @@ function commandStats(args: string[]): number {
   }
 }
 
-export function runKnowledgeCli(argv: string[]): number {
+export async function runKnowledgeCli(argv: string[]): Promise<number> {
   const [command, ...rest] = argv
-  switch (command) {
-    case 'index':
-      return commandIndex(rest)
-    case 'ask':
-      return commandAsk(rest)
-    case 'eval':
-      return commandEval(rest)
-    case 'stats':
-      return commandStats(rest)
-    case undefined:
-    case '-h':
-    case '--help':
-      process.stdout.write(USAGE)
-      return 0
-    default:
-      process.stderr.write(`error: unknown command "${command}"\n\n${USAGE}`)
-      return 2
+  try {
+    switch (command) {
+      case 'index':
+        return commandIndex(rest)
+      case 'ask':
+        return await commandAsk(rest)
+      case 'eval':
+        return await commandEval(rest)
+      case 'scorer':
+        return await commandScorer(rest)
+      case 'stats':
+        return commandStats(rest)
+      case undefined:
+      case '-h':
+      case '--help':
+        process.stdout.write(USAGE)
+        return 0
+      default:
+        process.stderr.write(`error: unknown command "${command}"\n\n${USAGE}`)
+        return 2
+    }
+  } catch (error) {
+    // Configuration errors are usage errors (2); anything else is a failed run (1).
+    const message = error instanceof Error ? error.message : String(error)
+    process.stderr.write(`error: ${message}\n`)
+    return message.startsWith('scorer ') || message.startsWith('unknown scorer') || message.startsWith('http scorer')
+      ? 2
+      : 1
   }
 }

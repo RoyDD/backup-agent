@@ -118,7 +118,27 @@ gold 声明为 `{source, heading?, contains?}`，或 `{source, passage:"source#o
 
 `sag2` r2 分类型：fact 49.54% / multihop 23.72% / troubleshoot 75.35% / confusable 48.26%（R@10）；分语言 zh 46.67% / en 49.87%。
 
-## 8. 结论
+## 8. P3：打分后端可插拔
+
+先给结论：**这台机器上跑不了模型档**——无 `torch`/`transformers`/`onnxruntime`，`huggingface.co` 不可达，也没有 JEV 的 key。所以 P3 做的是端口与协商，而不是伪造一组模型数字。
+
+`src/ports/scorer.ts` 定义 SAG2 里 JEV 的位置：
+
+| 后端 | 用途 | 约束 |
+|---|---|---|
+| `lexical`（默认） | 确定性特征混合（coverage / identifier / heading / lex） | 离线、零依赖；P2 的 48.27% 即由它测得 |
+| `command` | 外部 reranker 子进程 | argv-only、`shell: false`、stdin JSON → stdout `{scores}`、超时即杀；与 `Executor` 同一执行面（E-04） |
+| `http` | 远端打分服务（JEV 经薄适配接入） | 批量 POST、key 只从环境变量读、超时 30 s |
+
+协商是 fail-closed：`--scorer command` 缺 argv、`--scorer http` 缺 url、未知后端，一律退出码 2 并说明原因，**不静默退回 lexical**。`bkagent knowledge scorer` 提供 `health()` 探针，`ask`/`eval` 在开跑前先探一次。
+
+契约测试 `test/contract/scorer-contract.suite.ts`（C-S01–C-S03：逐候选一个有限分数且顺序一致、同请求确定性、`health()` 必须给出原因）由三个后端共同实现；另有失败面用例：非零退出带 stderr、超时 250 ms 被杀、`http` 非 200 带 body、候选文本里的 `; touch …` 不产生任何文件。
+
+接线验证（非质量结论）：把测试夹具当作 `command` 后端跑全量 100 题，R@10 变成 34.20%、p50 196 ms——排序确实由该后端决定，端口不是装饰。夹具只是词面重叠，因此这个数字不能与 `lexical` 并列比较。
+
+顺带修掉一个打包 bug：`dist/bkagent-knowledge.mjs` 里 `import.meta.url` 上溯两级会让默认索引落到 `/home/roy/var/knowledge.sqlite`。改为向上寻找 `pnpm-workspace.yaml`，源码态与 bundle 态解析到同一个 workspace 根，并加了回归测试。
+
+## 9. 结论
 
 1. **增益主要来自扩展，而不是逐轮重排**：`sag2` r2 48.27% 对 `expand-only` 47.13%，逐轮重选只贡献 +1.14pp。论文里这一档差距是 86.62% vs 61.34%——差别在于 JEV 是语义判定，而我们的代理打分器只会算词面覆盖。**结论是打分器而非循环结构才是瓶颈**，继续加轮次不会有收益（r3 与 r2 完全相同，只多 26 ms）。
 2. **MMR 在这个语料上是有害的**（48.27% → 43.69%）：本章题集的 gold 经常是同一 section 的多段近重复（故障目录一行一段、命令选项每组一段），多样性惩罚把正确答案挤出了 top-k。默认关闭，`--diversify on` 保留作对照。这是与论文相反的结果，原因是评测单元不同，不是实现错误。
@@ -127,12 +147,13 @@ gold 声明为 `{source, heading?, contains?}`，或 `{source, passage:"source#o
 5. **延迟完全可接受**：p50 46 ms、p95 65 ms，单机、无模型。论文中 SAG v1 的单查询 18.67 s 在这里是另一个量级。
 6. **gold 保持小集合**（平均 2.83、最大 8）：早期版本一个术语命中 58 个 passage，指标不可解释；现在用 `heading` + `contains` 或 `passage` 精确固定。
 
-## 9. 下一步
+## 10. 下一步
 
 | 顺位 | 动作 | 验收 |
 |---|---|---|
-| P3 | 本地 reranker（Qwen3-Reranker-0.6B 或等价离线模型）替换代理打分器的 coverage 项 | multihop R@10 > 23.72%，全量 R@10 ≥ 48.27% |
-| P3 | JEV API 档（手动、记录模型版本与成本） | 复现论文口径，与离线档并列报告 |
+| P3 | 真模型接入：本地 reranker 权重 + shim（`--scorer command`）或 JEV 端点（`--scorer http`） | multihop R@10 > 23.72%，全量 R@10 ≥ 48.27%；不改变循环结构 |
 | P2+ | 扩展词选择加入邻近性（term 与问题词在段内共现距离） | r2 增益 > 1.14pp |
 | P1+ | 语料补 `pg_probackup`、WAL-G 的 S3/delete 细节 | 覆盖 provider 差异 |
-| P4 | 接 dsh agent 层只读工具（只返回证据+引用） | 参数校验与呈现留在适配层 |
+| P4 | 接 dsh agent 层只读工具（只返回证据+引用） | 已完成 `kb_search`；后续只是参数透传 |
+
+> P3 的端口与契约已完成，模型档受环境限制（无 torch/权重、HF 不可达、无 JEV key）。接入时不改 `pipeline.ts`，只换 `--scorer`。

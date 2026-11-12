@@ -1,13 +1,32 @@
 import { readdirSync, readFileSync, existsSync } from 'node:fs'
-import { basename, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { parseFrontmatter } from '../text/frontmatter'
 import type { CorpusSource } from '../types'
 
-export const PACKAGE_ROOT = fileURLToPath(new URL('../../', import.meta.url))
+/**
+ * Workspace root, discovered rather than assumed.
+ *
+ * From source (`packages/knowledge/src/corpus/`) it is three levels up; from the
+ * esbuild bundle (`dist/bkagent-knowledge.mjs`) it is one. Walking up to the
+ * `pnpm-workspace.yaml` marker keeps both entry points on the same paths — a
+ * hard-coded `../..` silently pointed the default index at `/home/roy/var`.
+ */
+function findRepoRoot(startDir: string): string {
+  let dir = startDir
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (existsSync(join(dir, 'pnpm-workspace.yaml'))) return dir
+    const parent = dirname(dir)
+    if (parent === dir) break
+    dir = parent
+  }
+  return resolve(startDir, '..')
+}
+
 /** `.../code` — the pnpm workspace root. */
-export const REPO_ROOT = resolve(PACKAGE_ROOT, '../..')
+export const REPO_ROOT = findRepoRoot(dirname(fileURLToPath(import.meta.url)))
+export const PACKAGE_ROOT = join(REPO_ROOT, 'packages', 'knowledge')
 export const DEFAULT_CORPUS_DIR = process.env['BK_KNOWLEDGE_CORPUS'] ?? join(REPO_ROOT, 'knowledge-corpus')
 export const DEFAULT_DB_PATH = process.env['BK_KNOWLEDGE_DB'] ?? join(REPO_ROOT, 'var', 'knowledge.sqlite')
 
@@ -20,13 +39,13 @@ const LOCAL_DOCS: Array<{ sourceId: string; version: string; path: string; title
   {
     sourceId: 'local-plan-v1.0',
     version: 'plan-1.0',
-    path: resolve(PACKAGE_ROOT, '../../../docs/plan-v1.0.md'),
+    path: resolve(REPO_ROOT, '../docs/plan-v1.0.md'),
     title: 'backup-agent 方案 v1.0（冻结基线）',
   },
   {
     sourceId: 'local-plan-v1.1',
     version: 'plan-1.1',
-    path: resolve(PACKAGE_ROOT, '../../../docs/plan-v1.1.md'),
+    path: resolve(REPO_ROOT, '../docs/plan-v1.1.md'),
     title: 'backup-agent 方案 v1.1',
   },
   {

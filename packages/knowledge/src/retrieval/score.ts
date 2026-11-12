@@ -1,3 +1,4 @@
+import { LEXICAL_WEIGHTS, type ScorerFeatures } from '../ports/scorer'
 import { tokenize } from '../text/tokenize'
 import { isIdentifier, type CorpusStats } from './stats'
 
@@ -23,10 +24,12 @@ export interface Scorable {
 export interface Scored extends Scorable {
   tokens: Set<string>
   headingTokens: Set<string>
+  features: ScorerFeatures
   coverage: number
   identifier: number
   heading: number
   novelty: number
+  /** Lexical blend by default; replaced by the active scorer's output. */
   evidence: number
 }
 
@@ -92,12 +95,18 @@ export function scorePassage(
   const lex = normalizeBm25(passage.bm25, range.min, range.max)
 
   void stats // stats is threaded for callers that extend the feature set
-  const evidence = 0.40 * coverage + 0.15 * identifier + 0.10 * heading + 0.35 * lex
+  const features: ScorerFeatures = { coverage, identifier, heading, lex, novelty }
+  const evidence =
+    LEXICAL_WEIGHTS.coverage * coverage +
+    LEXICAL_WEIGHTS.identifier * identifier +
+    LEXICAL_WEIGHTS.heading * heading +
+    LEXICAL_WEIGHTS.lex * lex
 
   return {
     ...passage,
     tokens,
     headingTokens,
+    features,
     coverage,
     identifier,
     heading,
