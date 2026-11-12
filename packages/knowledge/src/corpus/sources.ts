@@ -68,6 +68,7 @@ function readLocalDocs(): CorpusSource[] {
     if (!existsSync(doc.path)) continue
     sources.push({
       origin: 'local',
+      tier: 'primary',
       sourceId: doc.sourceId,
       title: doc.title,
       url: doc.path,
@@ -93,6 +94,7 @@ function readDir(dir: string, origin: 'snapshot' | 'wiki'): CorpusSource[] {
       url: fields['url'] ?? '',
       kind: fields['kind'] === 'md' ? 'md' : 'html',
       origin,
+      tier: fields['tier'] === 'evidence' ? 'evidence' : 'primary',
       version: fields['version'] ?? 'unknown',
       license: fields['license'] ?? 'unknown',
       fetchedAt: fields['fetched_at'],

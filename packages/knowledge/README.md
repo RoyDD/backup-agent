@@ -30,7 +30,14 @@ pnpm --filter @backup-agent/knowledge ask "归档失败" --scorer http --scorer-
 
 ## 语料
 
-`knowledge-corpus/wiki/*.md` 是 llm-wiki 条目的**摘要视图**（`origin: wiki`，`url: llm-wiki://…` 指回原条目）；
+`knowledge-corpus/wiki/*.md` 分两层，都在 `origin: wiki` 下：
+
+- `pg-*.md`：条目**摘要视图**（默认 `tier: primary`），与主文档一起参与排序；
+- `raw-*.md`：**一手摘录**（`tier: evidence`），入库但**默认不参与排序**——它们是英文原文引用，
+  与摘要/文档重复，实测混排会把 R@10 从 50.01% 拉到 48.85%。需要引用原文时用 `--include-evidence`
+  或 `--source wikiraw-*` 直接取。
+
+
 它们是派生物，事实源在 wiki，改内容要改原条目后重新导出。
 
 `knowledge-corpus/*.md` 是**带 frontmatter 的固定快照**（`source_id / url / version / license / fetched_at / sha256 / chars`），`manifest.json` 记录每个来源的状态与哈希。项目内文档（`docs/plan-v1.0.md`、`docs/plan-v1.1.md`、`docs/failure-catalog.md` 及其证据文件）不入快照，按原路径就地读取（`src/corpus/sources.ts` 的 `LOCAL_DOCS`），避免索引与工程师正在编辑的文档漂移。

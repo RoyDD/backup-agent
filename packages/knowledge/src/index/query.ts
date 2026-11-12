@@ -13,6 +13,11 @@ export interface SearchOptions {
    * Default: on — it is query-side only and never mutates the index.
    */
   expand?: boolean
+  /**
+   * Include `evidence`-tier passages (verbatim source material kept for citation).
+   * Excluded by default: they restate primary passages and measurably lower R@10.
+   */
+  includeEvidence?: boolean
 }
 
 interface HitRow {
@@ -37,7 +42,9 @@ export function search(db: DatabaseSync, question: string, options: SearchOption
 
   const k = options.k ?? 10
   const sources = options.sources ?? []
-  const filter = sources.length > 0 ? ` AND p.source_id IN (${sources.map(() => '?').join(', ')})` : ''
+  const sourceFilter = sources.length > 0 ? ` AND p.source_id IN (${sources.map(() => '?').join(', ')})` : ''
+  const tierFilter = options.includeEvidence === true ? '' : ` AND p.tier = 'primary'`
+  const filter = `${sourceFilter}${tierFilter}`
 
   const sql = `
     SELECT p.id, p.source_id, p.version, p.heading_path, p.ordinal, p.text,

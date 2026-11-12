@@ -47,6 +47,8 @@ export interface PipelineOptions {
   diversify?: boolean
   lambda?: number
   sources?: string[]
+  /** Include evidence-tier passages in candidate generation. Default: false. */
+  includeEvidence?: boolean
   /** Scoring backend; defaults to the deterministic lexical blend. */
   scorer?: ScorerPort
   /**
@@ -109,6 +111,7 @@ export async function runPipeline(
   const rounds = mode === 'sag2' ? (options.rounds ?? DEFAULTS.rounds) : 0
   const sources = options.sources
   const scorer = options.scorer ?? lexicalScorer
+  const includeEvidence = options.includeEvidence === true
 
   const expanded = expandQuery(question, { enabled: options.expandAliases !== false })
   const stats = mode === 'bm25' ? null : new CorpusStats(db)
@@ -122,7 +125,7 @@ export async function runPipeline(
     }
   }
 
-  addHits(await search(db, expanded.query, { k: candidateK, expand: false, ...(sources ? { sources } : {}) }))
+  addHits(await search(db, expanded.query, { k: candidateK, expand: false, includeEvidence, ...(sources ? { sources } : {}) }))
 
   if (mode === 'bm25' || !stats || !qTerms) {
     return {
@@ -191,7 +194,7 @@ export async function runPipeline(
     )
     trace.terms.push(expansionTerms)
     for (const term of expansionTerms) {
-      addHits(await search(db, term, { k: DEFAULTS.perTermK, expand: false, ...(sources ? { sources } : {}) }))
+      addHits(await search(db, term, { k: DEFAULTS.perTermK, expand: false, includeEvidence, ...(sources ? { sources } : {}) }))
     }
     const ranked = await scoreAll(new Set())
     trace.candidates = pool.size
@@ -211,7 +214,7 @@ export async function runPipeline(
 
     const perTerm: Hit[][] = []
     for (const term of expansionTerms) {
-      perTerm.push(await search(db, term, { k: DEFAULTS.perTermK, expand: false, ...(sources ? { sources } : {}) }))
+      perTerm.push(await search(db, term, { k: DEFAULTS.perTermK, expand: false, includeEvidence, ...(sources ? { sources } : {}) }))
     }
     // Interleave by rank so no single term's tail floods the pool.
     const maxLength = Math.max(0, ...perTerm.map((hits) => hits.length))

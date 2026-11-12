@@ -6,7 +6,7 @@ import { chunkSource } from '../corpus/chunk'
 import { DEFAULT_CORPUS_DIR, DEFAULT_DB_PATH, loadSources } from '../corpus/sources'
 import { tokenString } from '../text/tokenize'
 
-export const SCHEMA_VERSION = '2'
+export const SCHEMA_VERSION = '3'
 /** Bumped whenever chunking changes, because it changes passage boundaries and scores. */
 export const CHUNK_POLICY = 'section/2200/table-row-split/v1'
 
@@ -37,7 +37,8 @@ CREATE TABLE passage(
   heading_path TEXT NOT NULL,
   ordinal INTEGER NOT NULL,
   text TEXT NOT NULL,
-  chars INTEGER NOT NULL
+  chars INTEGER NOT NULL,
+  tier TEXT NOT NULL DEFAULT 'primary'
 );
 CREATE INDEX passage_source ON passage(source_id, ordinal);
 CREATE TABLE term_df(term TEXT PRIMARY KEY, df INTEGER NOT NULL);
@@ -71,7 +72,7 @@ export function buildIndex(options: BuildOptions = {}): BuildStats {
     db.exec(SCHEMA)
     db.exec('BEGIN')
     const insertPassage = db.prepare(
-      'INSERT INTO passage(id, source_id, version, heading_path, ordinal, text, chars) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      'INSERT INTO passage(id, source_id, version, heading_path, ordinal, text, chars, tier) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
     )
     const insertFts = db.prepare('INSERT INTO passage_fts(rowid, heading_path, body) VALUES (?, ?, ?)')
     const insertTerm = db.prepare('INSERT INTO term_df(term, df) VALUES (?, ?)')
@@ -83,7 +84,16 @@ export function buildIndex(options: BuildOptions = {}): BuildStats {
       const id = index + 1
       totalChars += chunk.chars
       const bodyTokens = tokenString(chunk.text)
-      insertPassage.run(id, chunk.sourceId, chunk.version, chunk.headingPath, chunk.ordinal, chunk.text, chunk.chars)
+      insertPassage.run(
+        id,
+        chunk.sourceId,
+        chunk.version,
+        chunk.headingPath,
+        chunk.ordinal,
+        chunk.text,
+        chunk.chars,
+        chunk.tier ?? 'primary',
+      )
       insertFts.run(id, tokenString(chunk.headingPath), bodyTokens)
       // Distinct-per-passage counts, which is exactly what idf needs.
       for (const token of new Set(bodyTokens.split(' '))) {

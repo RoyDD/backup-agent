@@ -11,6 +11,13 @@ export interface CorpusSource {
   sourceId: string
   /** Where the text came from: pinned upstream snapshot, llm-wiki export, or a project doc. */
   origin?: 'snapshot' | 'wiki' | 'local'
+  /**
+   * Ranking tier. `primary` material answers questions directly; `evidence` is
+   * verbatim source material kept for citation, which competes with the passages
+   * that summarise it (measured: including it costs R@10). Evidence passages are
+   * indexed but excluded from ranking unless explicitly requested.
+   */
+  tier?: 'primary' | 'evidence'
   title: string
   url: string
   kind: 'html' | 'md'
@@ -23,6 +30,7 @@ export interface CorpusSource {
 }
 
 export interface Chunk {
+  tier?: 'primary' | 'evidence'
   sourceId: string
   version: string
   headingPath: string

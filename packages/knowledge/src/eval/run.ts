@@ -100,6 +100,8 @@ export interface EvalOptions {
   diversify?: boolean
   /** Scoring backend; defaults to the deterministic lexical blend. */
   scorer?: ScorerPort
+  /** Include evidence-tier passages (off by default). */
+  includeEvidence?: boolean
   /** Cap on candidates sent to an external scorer per round. */
   scorerWindow?: number
 }
@@ -134,6 +136,7 @@ export async function runEval(
       ...(options.diversify === undefined ? {} : { diversify: options.diversify }),
       ...(options.scorer === undefined ? {} : { scorer: options.scorer }),
       ...(options.scorerWindow === undefined ? {} : { scorerWindow: options.scorerWindow }),
+      includeEvidence: options.includeEvidence === true,
     })
     latencies.push(pipeline.trace.ms)
     const hits = pipeline.hits.map((hit) => hit.passageId)
@@ -209,6 +212,7 @@ export async function runEval(
         rounds: mode === 'sag2' ? (options.rounds ?? 2) : 0,
         diversify: mode === 'sag2' ? options.diversify === true : false,
         expand: options.expand === false ? 'none' : 'aliases',
+        includeEvidence: options.includeEvidence === true,
         sources: options.sources ?? 'all',
       },
     },

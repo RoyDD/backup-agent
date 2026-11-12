@@ -166,6 +166,7 @@ export function chunkSource(source: CorpusSource): Chunk[] {
     const body = text.trim()
     if (body.length < MIN_PASSAGE_CHARS) return
     chunks.push({
+      tier: source.tier ?? 'primary',
       sourceId: source.sourceId,
       version: source.version,
       headingPath,

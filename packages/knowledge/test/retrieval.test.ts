@@ -83,6 +83,27 @@ Cross-timeline comparisons of segment names are meaningless.
 `,
   'utf8',
 )
+writeFileSync(
+  join(corpusDir, 'wiki', 'raw-pg16-quote.md'),
+  `---
+source_id: wikiraw-quote
+title: Verbatim quote
+url: llm-wiki://postgresql-backup-recovery/raw/articles/quote.md
+kind: md
+origin: wiki
+tier: evidence
+version: quote-1
+license: internal
+---
+
+## Verbatim
+
+Normally, WAL files are archived in order, oldest to newest, but that is not guaranteed.
+Therefore it is not safe to assume that all files older than last_archived_wal have also
+been successfully archived.
+`,
+  'utf8',
+)
 
 buildIndex({ dbPath, corpusDir, includeLocalDocs: false })
 
@@ -128,6 +149,20 @@ describe('buildIndex + search', () => {
       const hits = search(db, 'timeline segment boundary file name', { k: 3, sources: ['wiki-pg-wal-naming'] })
       expect(hits.length).toBeGreaterThan(0)
       expect(hits[0]?.sourceId).toBe('wiki-pg-wal-naming')
+    } finally {
+      db.close()
+    }
+  })
+
+  it('keeps evidence-tier passages out of ranking unless explicitly requested', () => {
+    const db = openIndex(dbPath)
+    try {
+      const question = 'is it safe to assume files older than last_archived_wal were archived'
+      const ranked = search(db, question, { k: 5 })
+      expect(ranked.some((hit) => hit.sourceId === 'wikiraw-quote')).toBe(false)
+
+      const withEvidence = search(db, question, { k: 5, includeEvidence: true })
+      expect(withEvidence.some((hit) => hit.sourceId === 'wikiraw-quote')).toBe(true)
     } finally {
       db.close()
     }

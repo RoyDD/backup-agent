@@ -31,10 +31,11 @@ Usage:
                                   [--scorer lexical|command|http]
                                   [--scorer-arg <argv>]... [--scorer-url <url>]
                                   [--scorer-model <id>] [--scorer-key-env <VAR>] [--scorer-timeout <ms>]
-                                  [--scorer-window N]
+                                  [--scorer-window N] [--include-evidence]
   bkagent knowledge eval [--questions <path>] [--k N] [--db <path>] [--json <out>]
                          [--expand aliases|none] [--mode bm25|sag2|expand-only] [--rounds N]
                          [--seed-k N] [--terms N] [--diversify on|off] [--scorer ...] [--scorer-window N]
+                         [--include-evidence]
   bkagent knowledge scorer [--scorer lexical|command|http] [same scorer flags]
   bkagent knowledge stats [--db <path>]
 `
@@ -47,6 +48,7 @@ const SCORER_OPTIONS = {
   'scorer-key-env': { type: 'string' },
   'scorer-timeout': { type: 'string' },
   'scorer-window': { type: 'string' },
+  'include-evidence': { type: 'boolean', default: false },
 } satisfies ParseArgsConfig['options']
 
 interface ScorerFlags {
@@ -139,6 +141,7 @@ async function commandAsk(args: string[]): Promise<number> {
       ...(values.terms ? { termsPerRound: Number(values.terms) } : {}),
       diversify: values.diversify === 'on',
       scorer,
+      includeEvidence: values['include-evidence'] === true,
       ...(values['scorer-window'] ? { scorerWindow: Number(values['scorer-window']) } : {}),
     })
     if (values.json) {
@@ -204,6 +207,7 @@ async function commandEval(args: string[]): Promise<number> {
       ...(values.terms ? { termsPerRound: Number(values.terms) } : {}),
       diversify: values.diversify === 'on',
       scorer,
+      includeEvidence: values['include-evidence'] === true,
       ...(values['scorer-window'] ? { scorerWindow: Number(values['scorer-window']) } : {}),
     })
 
