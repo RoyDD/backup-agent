@@ -1,11 +1,11 @@
 {
   "version": 1,
-  "generatedAt": "2026-11-12T09:52:03.158Z",
+  "generatedAt": "2026-11-12T13:31:16.562Z",
   "entries": [
     {
       "name": "engine-extend",
       "path": "engine-extend/SKILL.md",
-      "sha256": "ebe15ec92dd5bb81256ef0d075a413578732b64bd74e0356013ee39cb2eda369"
+      "sha256": "c853d56e8579c258c7e81b67696a5782450f0bb8dd250feb610405fe5ccc2710"
     },
     {
       "name": "pg-backup",

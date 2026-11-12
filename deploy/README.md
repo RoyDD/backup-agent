@@ -1,5 +1,25 @@
 # Deployment
 
+## Install the CLI
+
+Both schedulers below invoke `/usr/local/bin/bkagent`:
+
+```sh
+pnpm build:cli
+install -d /opt/backup-agent
+install -m 0755 dist/bkagent.mjs /opt/backup-agent/bkagent.mjs
+cp -R dist/migrations /opt/backup-agent/migrations
+ln -sf /opt/backup-agent/bkagent.mjs /usr/local/bin/bkagent
+# optional (kb_search):
+install -m 0755 dist/bkagent-knowledge.mjs /opt/backup-agent/bkagent-knowledge.mjs
+ln -sf /opt/backup-agent/bkagent-knowledge.mjs /usr/local/bin/bkagent-knowledge
+```
+
+`build:cli` also emits `dist/migrations`. The bundle resolves that directory
+next to itself, so install both (for example `/opt/backup-agent/{bkagent.mjs,migrations}`
+plus a symlink), or set `BKAGENT_MIGRATIONS=/opt/backup-agent/migrations`. A
+single-file install without either fails at `migrate()`.
+
 ## Scheduling
 
 Two supported forms; `dsh-schedule` reminders are session-local and are not a
@@ -23,7 +43,26 @@ BKAGENT_DSN=postgres://backup@127.0.0.1:5432/postgres
 BKAGENT_DATABASE=app
 BKAGENT_OUTPUT=/var/backups/postgres/app.dump
 BKAGENT_CONTROL_DB=/var/lib/backup-agent/control.db
+# Optional: let the control plane own artifact bytes (backup --storage-kind …)
+BKAGENT_STORAGE_ROOT=/var/lib/backup-agent/artifacts
+# or S3 instead of a local root:
+# BKAGENT_S3_ENDPOINT=http://127.0.0.1:9000
+# BKAGENT_S3_REGION=us-east-1
+# BKAGENT_S3_BUCKET=bkagent
+# BKAGENT_S3_ACCESS_KEY_ID=…
+# BKAGENT_S3_SECRET_ACCESS_KEY=…
 ```
+
+With a storage backend configured, add `--storage-kind fs|s3 [--remove-local]` to
+the backup job so the artifact is uploaded and the catalog row points at the
+storage location with a sha256 digest. Without it, artifacts stay where the step
+wrote them. `storage-gc` treats objects referenced by any catalog row as live.
+
+`BKAGENT_OUTPUT` and `BKAGENT_CONTROL_DB` above are template variables: the
+systemd unit and the cron example pass them to `--out` and `--db` explicitly. The
+CLI itself only reads `BKAGENT_DB` as a default for `--db`; it has no
+`BKAGENT_OUTPUT` / `BKAGENT_CONTROL_DB` fallback, so an invocation that omits
+`--out` / `--db` will not pick these values up.
 
 ### cron
 
@@ -98,8 +137,11 @@ by this agent, but physical reclamation is still unimplemented: the plan-v1.1
   outbox events at least once; run it from cron independently of backup jobs. Failure
   notifications use `BKAGENT_WEBHOOK_URL` from the environment file, and receivers must
   deduplicate on `outbox_id` (exactly-once delivery is not promised).
-- `bkagent watchdog --db ...` reconciles running attempts against live leases and reports
-  outbox pending/expired/dead-letter state.
+- `bkagent watchdog --db ... [--threshold-gb N]` reconciles running attempts against live
+  leases, reports outbox pending/expired/dead-letter state, and evaluates the alert ladder
+  (P1 no VRP inside RPO, P2 consecutive failure streak, P3 overdue verification, P4 capacity
+  horizon). Alerts are printed as JSON and pushed to `BKAGENT_WEBHOOK_URL` when it is set;
+  delivery failures are reported under `delivery.failed` and never fail the run.
 - `bkagent notify-test --url https://...` verifies webhook delivery.
 
 Recommended alerts:

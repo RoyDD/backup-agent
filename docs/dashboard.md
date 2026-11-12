@@ -22,7 +22,9 @@ It shows:
 bkagent dashboard --db /var/lib/backup-agent/control.db --serve --port 8787
 ```
 
-Binds to `127.0.0.1` only. Suitable behind an authenticated reverse proxy.
+Binds to `127.0.0.1` only. Suitable behind an authenticated reverse proxy. Each
+request re-renders from the control database, so a long-running panel shows the
+current catalog rather than the state at startup.
 
 ## Scope
 

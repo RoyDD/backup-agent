@@ -16,9 +16,10 @@ scripts/install-dsh.sh web
 
 脚本执行：
 
-1. `pnpm build:cli` 生成 `dist/bkagent.mjs`；
-2. 复制 preset 到 `${DSH_HOME:-~/.dsh}/.agent-presets/pg-dba`；
-3. `dsh plugin --profile web add link:<repo>/packages/dsh-plugin`。
+1. `pnpm build:cli` 生成 `dist/bkagent.mjs`，`pnpm build:knowledge` 生成 `dist/bkagent-knowledge.mjs`；
+2. `var/knowledge.sqlite` 不存在时执行 `pnpm --filter @backup-agent/knowledge index`；
+3. 复制 preset 到 `${DSH_HOME:-~/.dsh}/.agent-presets/pg-dba`；
+4. `dsh plugin --profile web add link:<repo>/packages/dsh-plugin`。
 
 重启 dsh 后，在会话创建时选择「PostgreSQL 备份恢复」预设。
 
@@ -33,12 +34,17 @@ scripts/install-dsh.sh web
 | `pg_inspect` | 实例版本、角色、WAL、归档、数据库清单 | 只读 |
 | `pg_backup` | 逻辑/物理备份，可写控制库 | 只读 |
 | `pg_restore` | 逻辑恢复；所有输入均按可能含破坏性 SQL 处理并走审批 | 破坏性 |
-| `pg_verify` | 恢复到临时库并比对行数 | 可逆 |
+| `pg_verify` | 恢复到临时库并比对行数、schema、amcheck | 可逆 |
+| `pg_pitr` | 按 time/LSN/name/xid 恢复到目标数据目录；先经 `ctx.approval` | 破坏性 |
 | `pg_catalog` | 备份产物清单 | 只读 |
 | `pg_report` | 运行报表 | 只读 |
 | `kb_search` | 在 SAG2 证据库中检索原文段落（source#ordinal + 标题路径） | 只读 |
 
-每次 `pg_restore` 调用都会先调用 `ctx.approval.request()`；即使没有 `createDatabase` 或 `clean`，转储输入也可能含有 `DROP` 等破坏性 SQL。没有发起主体或审批服务不可用时**失败关闭**。CLI 还会要求精确登记 Asset、`--yes`，并对生产目标复核双人审批。
+每次 `pg_restore` 调用都会先调用 `ctx.approval.request()`；即使没有 `createDatabase` 或 `clean`，转储输入也可能含有 `DROP` 等破坏性 SQL。没有发起主体或审批服务不可用时**失败关闭**。CLI 还会要求精确登记 Asset、`--yes`，并对生产目标执行双人复核。
+
+工具调用携带的取消信号会透传到后端进程：工具被取消时 `spawn` 以 `signal` 中止，不会留下无人等待的备份进程。`kb_search` 的 query 放在 `--` 之后，因此以 `-` 开头的问题（例如「为什么 `--type=time` 不生效」）不会被当成选项。
+
+pgBackRest / WAL-G 与运维类命令（`pgbackrest-*` / `walg-*` / `retain` / `metrics` / `storage-*`）尚未暴露为工具，`pg-pitr` 之外的运维技能仍只能经 `bash` 调用 CLI，这是 P5 的已知缺口。
 
 ## 技能
 
@@ -59,6 +65,19 @@ scripts/install-dsh.sh web
 > 把 /backups/app.dump 恢复到新库 app_restore_20261112，并报告行数比对结果
 ```
 
+## 工具注册表与 MCP 入口
+
+工具只定义一次：`packages/dsh-plugin/tools.js` 的 `TOOL_DEFINITIONS`（name、description、JSON Schema、`buildArgv`、`requiresApproval`）。两个入口都从它派生，禁止分叉定义（ADR-008）：
+
+- dsh 插件：`index.js` 的 `apply()` 注册同名工具，参数 DSL 由共享 JSON Schema 转换而来。
+- MCP stdio 服务：`node packages/dsh-plugin/mcp.js`（`bin`：`bkagent-mcp`），换行分隔的 JSON-RPC 2.0，支持 `initialize` / `ping` / `tools/list` / `tools/call`；stdout 只有协议响应。
+
+**MCP 下的破坏性工具一律失败关闭**：MCP 没有 dsh 的审批通道，`pg_restore` / `pg_pitr` 返回 `isError: true` 并提示改用 preset 或 CLI，不会启动后端进程。
+
+```sh
+BKAGENT_CLI=$PWD/dist/bkagent.mjs node packages/dsh-plugin/mcp.js
+# → {"jsonrpc":"2.0","id":1,"method":"initialize",...}
+```
 ## 本地校验（不依赖模型）
 
 ```sh

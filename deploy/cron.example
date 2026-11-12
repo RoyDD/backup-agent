@@ -1,26 +1,31 @@
 # backup-agent cron example.
-# Install as /etc/cron.d/backup-agent (root) or in the postgres user's crontab.
+#
+# Install as /etc/cron.d/backup-agent (root-owned, mode 0644). This is cron.d
+# syntax: every job line carries a *user* column between the schedule and the
+# command. For a per-user crontab (`crontab -e`), delete that column.
 #
 # The environment file supplies BKAGENT_DSN, BKAGENT_DATABASE, BKAGENT_OUTPUT,
-# BKAGENT_CONTROL_DB and (optionally) BKAGENT_WEBHOOK_URL for failure
-# notifications. Keep credentials and the webhook URL out of the crontab itself.
+# BKAGENT_CONTROL_DB and (optionally) BKAGENT_WEBHOOK_URL. Keep credentials and
+# the webhook URL out of the crontab itself.
+#
+# `bkagent` must be on PATH: `install -m 0755 dist/bkagent.mjs /usr/local/bin/bkagent`.
 
 SHELL=/bin/sh
 PATH=/usr/local/bin:/usr/bin:/bin
 BKAGENT_ENV=/etc/backup-agent/backup.env
 
-# m  h  dom mon dow   command
-0    2  *   *   *     set -a; . "$BKAGENT_ENV"; set +a; /usr/local/bin/bkagent backup --dsn "$BKAGENT_DSN" --database "$BKAGENT_DATABASE" --out "$BKAGENT_OUTPUT" --format custom --db "$BKAGENT_CONTROL_DB" >> /var/log/bkagent-backup.log 2>&1
+# m  h  dom mon dow  user      command
+0    2  *   *   *    postgres  set -a; . "$BKAGENT_ENV"; set +a; /usr/local/bin/bkagent backup --dsn "$BKAGENT_DSN" --database "$BKAGENT_DATABASE" --out "$BKAGENT_OUTPUT" --format custom --db "$BKAGENT_CONTROL_DB" >> /var/log/bkagent-backup.log 2>&1
 
 # Outbox dispatch is independent of plan execution: the CLI only appends
 # transactional outbox rows, this job delivers them at least once. Receivers
 # must deduplicate on outbox_id. Audit events are retained in place; failure
 # notifications go to BKAGENT_WEBHOOK_URL when it is configured.
-*    *   *   *   *  set -a; . "$BKAGENT_ENV"; set +a; /usr/local/bin/bkagent outbox-dispatch --db "$BKAGENT_CONTROL_DB" --limit 50 --max-attempts 5 >> /var/log/bkagent-outbox.log 2>&1
+*    *   *   *   *    postgres  set -a; . "$BKAGENT_ENV"; set +a; /usr/local/bin/bkagent outbox-dispatch --db "$BKAGENT_CONTROL_DB" --limit 50 --max-attempts 5 >> /var/log/bkagent-outbox.log 2>&1
 
 # Watchdog reconciles running attempts against live leases and reports outbox
 # backlog (pending / expired / dead-letter).
-*/5  *   *   *   *  set -a; . "$BKAGENT_ENV"; set +a; /usr/local/bin/bkagent watchdog --db "$BKAGENT_CONTROL_DB" >> /var/log/bkagent-watchdog.log 2>&1
+*/5  *   *   *   *    postgres  set -a; . "$BKAGENT_ENV"; set +a; /usr/local/bin/bkagent watchdog --db "$BKAGENT_CONTROL_DB" >> /var/log/bkagent-watchdog.log 2>&1
 
 # Retention is intentionally NOT scheduled as a blind --apply. It is a reviewed
 # two-phase flow: dry-run to get a decision digest, then apply that exact digest

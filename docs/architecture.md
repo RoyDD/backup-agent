@@ -68,6 +68,26 @@ flowchart TB
   DASH --> DB
 ```
 
+引擎与 provider 通过 §11 契约描述：`EngineDescriptor` / `ProviderDescriptor` 声明能力、版本区间与所需工具，`ProviderAdapter` 提供 `inspect / plan / preflight / backup / restore / verify / catalog / prune` 八个操作。注册表与 `bkagent providers` 的用法见 [provider-contract.md](provider-contract.md)。
+
+## 1.1 执行、存储与通知
+
+| 层 | 实现 | 状态 |
+|---|---|---|
+| `Executor` | `local`（本地 spawn，argv-only） | 已用于所有命令 |
+| | `ssh`（`BatchMode=yes` + `StrictHostKeyChecking=yes`，`UserKnownHostsFile` 必填；远端 argv 以 POSIX 单引号作为**传输编码**，本地不拼 shell 串） | 已实现；`Plan.transport` 可选中，`bkagent exec --transport ssh … -- <argv>` 用于契约验证 |
+| | `kubectl exec … -- <argv>`（argv 直传，无 shell 字符串） | 已实现；`bkagent exec --transport kubectl …` |
+| `Storage` | `fs` / `nfs`（root 限定、原子 rename、key 越界拒绝） | 已实现（端口 + 单元测试） |
+| | `s3`（手写 SigV4，path-style，`fetch` 注入） | 已实现（签名有 AWS 官方向量对照） |
+| `Notifier` | webhook | 已用于 outbox 与 watchdog |
+| | SMTP（`node:net`，AUTH PLAIN，点填充，头注入防护） | 已实现；**无 STARTTLS**，仅适用于回环/可信中继 |
+
+传输由 `Plan.transport` 记录并在执行处选择（`local` / `ssh` / `kubectl`），全局 `--transport` 等标志统一解析后同时用于探测与执行。远端计划**不转发子进程环境变量**：带 env 的远端计划在执行前被拒绝，操作者需在目标机准备凭据（`.pgpass` / peer / GSSAPI）；DSN 中的密码不会转发。探测在远端模式下把连接参数（host/port/user/dbname）作为 argv 传给 `psql`，因此无需任何 env；计划步骤本来就把连接参数放在 argv 中，密码只可能来自目标机自己的凭据源。
+
+artifact 可经 `Storage` 落库：`backup --storage-kind fs|nfs|s3 [--storage-root …]` 在计划成功后把产物写入配置的 Storage，行内记录 storage 位置与 sha256（上传失败则整次运行判失败，不写一个读不到的位置）；`artifact-upload` 用于既有行。远端计划的产物记录为 `<transport>:<path>`（例如 `ssh:dba@db1:/var/backups/x.dump`），表示字节在目标机、控制面不可读；此时配置 storage sink 会被拒绝。`storage-purge` / `storage-gc` 因此对 fs 与 s3 位置都成立。
+
+尚未接线：目录形态产物（`pg_basebackup -Fp`、`pg_dump -Fd`）暂不支持上传；远端产物上传需先把字节拉回控制面；SMTP 无 TLS。
+
 ## 2. Plan/Apply 流程
 
 ```mermaid
@@ -116,14 +136,14 @@ flowchart TD
 所有 `executePlan` 路径（`packages/cli/src/execute-plan.ts`）在执行前都要在控制库中取得 `plan.targetId` 的租约；未传 `--db` 时同样使用默认控制库（`BKAGENT_DB` → `.bkagent/control.db`），因此 `pgbackrest-backup`、`walg-backup` 也补齐了 `--db` 参数。
 
 - **锁键就是 provider 特定的 `plan.targetId`**。同一 PostgreSQL 集群经由不同 provider 或不同 data directory 生成的 Plan 具有不同 `targetId`，彼此**不会**串行化；这里不是集群级互斥。
-- 获取租约在 `Repository.transaction()`（SQLite `BEGIN IMMEDIATE`）内完成，跨进程的“读 fence → 递增 → 写入”因此是原子的。同一 owner 在租约未过期时也不能直接重新获取，只能 `renew`，否则会绕过 fence 递增。
+- 获取租约在 `Repository.transaction()`（SQLite `BEGIN IMMEDIATE`）内完成，跨进程的「读 fence → 递增 → 写入」因此是原子的。同一 owner 在租约未过期时也不能直接重新获取，只能 `renew`，否则会绕过 fence 递增。
 - owner 每次调用都是 `<principal|cli>:<pid>:<random>`，不使用常量 `cli`，避免两次运行互相续租或释放。
 - TTL 默认 60s，心跳间隔为 `TTL/3`；续租失败（token 不匹配、租约已过期、DB 异常）即中止 `AbortSignal`，runner 不再派发任何步骤并返回 `lease-lost`。租约过期后不会被 `renew` 复活。
 - `finally` 中只释放 owner+token 匹配的那一行；心跳任务先结束再释放。子进程执行期间不持有任何长事务，控制库连接只用于心跳与终态写入。
 
 **运行生命周期**（`packages/core/src/persistence/run-lifecycle.ts`，由 `executePlan` 统一调用，不在各命令里分别接线）：
 
-- **start 先于副作用**：取得租约的同一个 `BEGIN IMMEDIATE` 事务内写入 Ticket（`in_progress`）、Mandate、Plan（`dispatched`）与 Attempt（`running`），使用 Plan 自带的 `ticketId`/`mandateId`（不再新建 ticket id），Attempt 记录真实 `targetId`、owner 与 lease token，并追加 ticket→plan、plan→attempt 血缘与确定性的 `audit.run` start 事件。事务提交后才允许派发子进程；start 写不进去就不会派发任何子进程，租约已过期也不会开始运行。
+- **start 先于副作用**：取得租约的同一个 `BEGIN IMMEDIATE` 事务内写入 Ticket（`in_progress`）、Mandate、Plan（`dispatched`）与 Attempt（`running`），使用 Plan 自带的 `ticketId`/`mandateId`（不再新建 ticket ID），Attempt 记录真实 `targetId`、owner 与 lease token，并追加 ticket→plan、plan→attempt 血缘与确定性的 `audit.run` start 事件。事务提交后才允许派发子进程；start 写不进去就不会派发任何子进程，租约已过期也不会开始运行。
 - **终态与 Outbox 同事务**：普通成功/失败在一个短事务内重新校验 `currentFence` 与仍然存活的租约行（owner/token/`expiresAt > now`），更新 Attempt 终态与错误字段、Ticket 状态、按需插入 Artifact、追加 attempt→artifact 血缘，并追加确定性的 `audit.run` 事件；失败时再加一条 `notify.failure` 事件。事务不跨越任何外部工作。终态写不进去时命令以 `lease-lost` 非成功退出，绝不把未留痕的运行报告为成功。
 - `lease-lost`、fence 被取代或租约已过期时**不写任何终态、不写 Outbox**，Attempt 保持 `running` 交给对账；对账只有在匹配的活租约不存在/已过期/被更高 token 取代时才将其标为 `stalled`，即使运行时间已超过最初租约 TTL。
 - 未传 `--db` 时同样写解析后的控制库（`BKAGENT_DB` → `.bkagent/control.db`），所有 `executePlan` 路径一致；provider 管理的备份不伪造本地 artifact 路径。
@@ -145,7 +165,7 @@ PITR 使用该机制：`buildPitrRestorePlan` 始终附带 cleanup 图——`sto
 - 停止后删除标记，避免复用同一数据目录的下一个实例被后续清理误停。
 - 此前目标未达成时服务器会继续占用数据目录，导致重跑时 `pg_ctl start` 直接失败；现在失败后实例会被停止，修正参数后可直接重跑。若清理本身失败（`cleanupFailed`），CLI 会在 stderr 明确报告，需要人工停止实例后再重试。
 
-### 2.3 Outbox 派发
+### 2.4 Outbox 派发
 
 `packages/core/src/persistence/outbox-dispatch.ts` + `bkagent outbox-dispatch --db … [--limit N] [--max-attempts N]` 是独立于执行的派发器（cron 示例见 `deploy/cron.example`），`executePlan` 内联派发是被禁止的。
 
