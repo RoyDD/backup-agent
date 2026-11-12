@@ -134,6 +134,53 @@ describe('runPlan', () => {
     }
   })
 
+  it('re-runs a checkpoint:none step on resume', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'bk-state-'))
+    try {
+      const plan = makePlan({
+        planId: 'pln_resume_none' as never,
+        steps: [
+          step({ stepId: 'dump', argv: ['dump'], idempotencyKey: 'dump', checkpoint: 'none' }),
+        ],
+      })
+      const first = new FakeExecutor()
+      first.enqueue({ match: ['dump'], response: { stdout: 'ok' } })
+      await runPlan(plan, { executor: first, stateDir, sleep })
+
+      const second = new FakeExecutor()
+      second.enqueue({ match: ['dump'], response: { stdout: 'ok' } })
+      const resumed = await runPlan(plan, { executor: second, stateDir, resume: true, sleep })
+      expect(resumed.status).toBe('succeeded')
+      expect(resumed.steps[0]?.status).toBe('succeeded')
+      expect(second.calls).toHaveLength(1)
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true })
+    }
+  })
+
+  it('re-runs a checkpoint:before step on resume', async () => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'bk-state-'))
+    try {
+      const plan = makePlan({
+        planId: 'pln_resume_before' as never,
+        steps: [
+          step({ stepId: 'dump', argv: ['dump'], idempotencyKey: 'dump', checkpoint: 'before' }),
+        ],
+      })
+      const first = new FakeExecutor()
+      first.enqueue({ match: ['dump'], response: { stdout: 'ok' } })
+      await runPlan(plan, { executor: first, stateDir, sleep })
+
+      const second = new FakeExecutor()
+      second.enqueue({ match: ['dump'], response: { stdout: 'ok' } })
+      const resumed = await runPlan(plan, { executor: second, stateDir, resume: true, sleep })
+      expect(resumed.steps[0]?.status).toBe('succeeded')
+      expect(second.calls).toHaveLength(1)
+    } finally {
+      rmSync(stateDir, { recursive: true, force: true })
+    }
+  })
+
   it('includes stdout and stderr in failed outcomes', async () => {
     const executor = new FakeExecutor()
     executor.enqueue({

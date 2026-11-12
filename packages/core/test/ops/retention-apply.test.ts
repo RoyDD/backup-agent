@@ -497,7 +497,7 @@ describe('tombstoneRetention', () => {
     // History reads still prove what was verified before the tombstone.
     const history = await r.artifacts.list({ targetId, lifecycle: 'any' })
     expect(evaluateAssetRpo([asset('pg-dev')], history, NOW)[0]?.lastVerifiedAt).toBe(
-      '2026-01-10T00:00:00.000Z',
+      '2026-01-10T01:00:00.000Z',
     )
     expect((await r.artifacts.get(asArtifactId('art_verified')))?.lifecycleState).toBe('tombstoned')
   })

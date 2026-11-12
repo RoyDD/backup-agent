@@ -30,6 +30,9 @@ export function fingerprintPlan(plan: Plan): string {
     cleanup: plan.cleanup,
     resources: plan.resources,
     risk: plan.risk,
+    // Where the steps run changes the blast radius, so it belongs in the digest:
+    // a plan must not be re-pointed at another host without a new fingerprint.
+    transport: plan.transport ?? null,
   }
   return createHash('sha256').update(canonicalJson(payload)).digest('hex')
 }

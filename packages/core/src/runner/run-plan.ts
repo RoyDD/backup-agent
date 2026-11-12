@@ -141,6 +141,25 @@ function statePath(stateDir: string, planId: string): string {
   return join(stateDir, `${planId}.json`)
 }
 
+/**
+ * Applies a step's checkpoint policy to the resume set and reports whether the
+ * checkpoint file should be written.
+ *
+ * - `after` (default): the step finished, so its side effects are done and a
+ *   resume may skip it.
+ * - `none`: nothing is recorded; the step always re-runs on resume.
+ * - `before`: the boundary *before* the step is recorded, but the step is never
+ *   marked finished, so a resume returns to that boundary and re-runs it. This
+ *   is the safe mode for a step whose side effects are not idempotent.
+ */
+function checkpointStep(step: Step, completed: Set<string>): boolean {
+  if (step.checkpoint === 'after') {
+    completed.add(step.stepId)
+    return true
+  }
+  return step.checkpoint === 'before'
+}
+
 function loadCompleted(stateDir: string | undefined, planId: string): Set<string> {
   if (!stateDir) return new Set()
   try {
@@ -541,8 +560,9 @@ export async function runPlan(plan: Plan, options: RunPlanOptions): Promise<RunP
           ...(outcome.message === undefined ? {} : { error: outcome.message }),
         })
       }
-      completed.add(step.stepId)
-      saveCompleted(options.stateDir, plan.planId, completed, now())
+      if (checkpointStep(step, completed)) {
+        saveCompleted(options.stateDir, plan.planId, completed, now())
+      }
       continue
     }
 
@@ -693,8 +713,9 @@ export async function runPlan(plan: Plan, options: RunPlanOptions): Promise<RunP
       })
     }
 
-    completed.add(step.stepId)
-    saveCompleted(options.stateDir, plan.planId, completed, now())
+    if (checkpointStep(step, completed)) {
+      saveCompleted(options.stateDir, plan.planId, completed, now())
+    }
   }
 
   return { planId: plan.planId, status: 'succeeded', steps: outcomes }

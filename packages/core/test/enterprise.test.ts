@@ -170,7 +170,12 @@ describe('asset RPO', () => {
 
     const stale = evaluateAssetRpo(
       [asset],
-      [artifact({ createdAt: '2025-12-31T00:00:00.000Z' })],
+      [
+        artifact({
+          createdAt: '2025-12-31T00:00:00.000Z',
+          verifiedAt: '2025-12-31T00:00:00.000Z',
+        }),
+      ],
       now,
     )
     expect(stale[0]?.withinRpo).toBe(false)
@@ -178,6 +183,23 @@ describe('asset RPO', () => {
     const unverified = evaluateAssetRpo([asset], [artifact({ verifiedLevel: null })], now)
     expect(unverified[0]?.lastVerifiedAt).toBeNull()
     expect(unverified[0]?.withinRpo).toBe(false)
+  })
+
+  it('ages the restore point from verification, not from when the bytes were written', () => {
+    const now = new Date('2026-01-03T00:00:00.000Z')
+    const status = evaluateAssetRpo(
+      [asset],
+      [
+        artifact({
+          createdAt: '2026-01-01T00:00:00.000Z', // 48h-old backup
+          verifiedAt: '2026-01-02T23:50:00.000Z', // proven 10 minutes ago
+        }),
+      ],
+      now,
+    )
+    expect(status[0]?.withinRpo).toBe(true)
+    expect(status[0]?.lastVerifiedAt).toBe('2026-01-02T23:50:00.000Z')
+    expect(status[0]?.ageMinutes).toBeCloseTo(10)
   })
 })
 
@@ -269,6 +291,69 @@ describe('four-eyes approvals', () => {
     expect(status.distinct).toBe(2)
     expect(status.ok).toBe(true)
     expect(status.selfApproved).toEqual(['os:roy'])
+  })
+
+  it('counts the OS identity, so two labels cannot forge two approvers', () => {
+    // Same environment-derived identity behind two different labels: one approver.
+    const forged = fourEyesStatus(
+      'production-destructive',
+      [
+        { approver: 'alice', approverOs: 'os:roy', decision: 'approve', createdAt: '2026-01-01T00:30:00.000Z' },
+        { approver: 'bob', approverOs: 'os:roy', decision: 'approve', createdAt: '2026-01-01T00:30:00.000Z' },
+      ],
+      now,
+    )
+    expect(forged.distinct).toBe(1)
+    expect(forged.ok).toBe(false)
+    expect(forged.reason).toBe('insufficient-approvals')
+
+    // Two distinct OS identities satisfy four eyes regardless of their labels.
+    const genuine = fourEyesStatus(
+      'production-destructive',
+      [
+        { approver: 'ops-on-call', approverOs: 'os:roy', decision: 'approve', createdAt: '2026-01-01T00:30:00.000Z' },
+        { approver: 'ops-on-call', approverOs: 'os:sam', decision: 'approve', createdAt: '2026-01-01T00:30:00.000Z' },
+      ],
+      now,
+    )
+    expect(genuine).toEqual({ required: 2, distinct: 2, ok: true })
+  })
+
+  it('keeps the label-based behaviour for records without an OS identity', () => {
+    const status = fourEyesStatus(
+      'production-destructive',
+      [approval('alice'), approval('bob')],
+      now,
+    )
+    expect(status).toEqual({ required: 2, distinct: 2, ok: true })
+
+    const requester = fourEyesStatus(
+      'production-destructive',
+      [approval('os:roy'), approval('alice')],
+      now,
+      3_600_000,
+      ['os:roy'],
+    )
+    expect(requester.distinct).toBe(1)
+    expect(requester.ok).toBe(false)
+    expect(requester.selfApproved).toEqual(['os:roy'])
+  })
+
+  it('excludes a requester matched by either the OS identity or its label', () => {
+    const status = fourEyesStatus(
+      'production-destructive',
+      [
+        { approver: 'roy', approverOs: 'os:roy', decision: 'approve', createdAt: '2026-01-01T00:30:00.000Z' },
+        { approver: 'alice', approverOs: 'os:alice', decision: 'approve', createdAt: '2026-01-01T00:30:00.000Z' },
+      ],
+      now,
+      3_600_000,
+      ['os:roy'],
+    )
+    expect(status.distinct).toBe(1)
+    expect(status.ok).toBe(false)
+    // The human label is reported, not the OS identity.
+    expect(status.selfApproved).toEqual(['roy'])
   })
 
   it('escalates every destructive plan on a production asset', () => {

@@ -93,4 +93,90 @@ describe('artifact lifecycle', () => {
     expect(a?.checksum).toBe('sha256:abc')
     expect(a?.path).toBe('/backups/art_a.dump')
   })
+
+  it('relocates a row to a storage location and keeps the digest when none is supplied', async () => {
+    const r = await open()
+    await r.artifacts.insert(record('art_moved'))
+
+    expect(
+      await r.artifacts.relocate({
+        id: asArtifactId('art_moved'),
+        path: 's3://bucket/pg-dev/full/pln_1-art_moved.dump',
+        sizeBytes: 4096,
+        checksum: 'sha256:moved',
+      }),
+    ).toBe(true)
+
+    const moved = await r.artifacts.get(asArtifactId('art_moved'))
+    expect(moved?.path).toBe('s3://bucket/pg-dev/full/pln_1-art_moved.dump')
+    expect(moved?.sizeBytes).toBe(4096)
+    expect(moved?.checksum).toBe('sha256:moved')
+
+    // Null checksum keeps the recorded digest; only path/size change.
+    expect(
+      await r.artifacts.relocate({
+        id: asArtifactId('art_moved'),
+        path: '/srv/backups/art_moved.dump',
+        sizeBytes: 99,
+        checksum: null,
+      }),
+    ).toBe(true)
+
+    const retained = await r.artifacts.get(asArtifactId('art_moved'))
+    expect(retained?.path).toBe('/srv/backups/art_moved.dump')
+    expect(retained?.sizeBytes).toBe(99)
+    expect(retained?.checksum).toBe('sha256:moved')
+
+    expect(
+      await r.artifacts.relocate({
+        id: asArtifactId('art_missing'),
+        path: '/srv/backups/missing.dump',
+        sizeBytes: 1,
+        checksum: null,
+      }),
+    ).toBe(false)
+  })
+
+  it('records verification evidence and keeps the checksum when none is supplied', async () => {
+    const r = await open()
+    await r.artifacts.insert(record('art_v'))
+
+    expect(
+      await r.artifacts.markVerified({
+        id: asArtifactId('art_v'),
+        level: 'V2',
+        verifiedAt: LATER,
+        checksum: 'sha256:new',
+      }),
+    ).toBe(true)
+
+    const verified = await r.artifacts.get(asArtifactId('art_v'))
+    expect(verified?.verifiedLevel).toBe('V2')
+    expect(verified?.verifiedAt).toBe(LATER)
+    expect(verified?.checksum).toBe('sha256:new')
+
+    expect(
+      await r.artifacts.markVerified({
+        id: asArtifactId('art_v'),
+        level: 'V3',
+        verifiedAt: NOW,
+        checksum: null,
+      }),
+    ).toBe(true)
+
+    const retained = await r.artifacts.get(asArtifactId('art_v'))
+    expect(retained?.verifiedLevel).toBe('V3')
+    expect(retained?.verifiedAt).toBe(NOW)
+    // COALESCE keeps the previously recorded digest.
+    expect(retained?.checksum).toBe('sha256:new')
+
+    expect(
+      await r.artifacts.markVerified({
+        id: asArtifactId('art_missing'),
+        level: 'V0',
+        verifiedAt: NOW,
+        checksum: null,
+      }),
+    ).toBe(false)
+  })
 })

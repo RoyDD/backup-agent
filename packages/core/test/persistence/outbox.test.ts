@@ -197,7 +197,39 @@ describe('OutboxStore', () => {
       dispatched: 0,
       deadLetter: 0,
       expiredProcessing: 1,
+      oldestPendingAt: at(10_000),
     })
+  })
+
+  it('reports the oldest pending availableAt and ignores dispatched rows', async () => {
+    const r = await open()
+    expect((await r.outbox.stats(T0)).oldestPendingAt).toBeNull()
+
+    await r.outbox.append({ topic: 't', payload: {}, idempotencyKey: 'k-1', availableAt: T0 })
+    await r.outbox.append({
+      topic: 't',
+      payload: {},
+      idempotencyKey: 'k-2',
+      availableAt: at(5_000),
+    })
+    expect((await r.outbox.stats(T0)).oldestPendingAt).toBe(T0)
+
+    // Dispatch the oldest row; the lag must follow the next pending record.
+    const [claimed] = await r.outbox.claim({ now: T0, limit: 1, leaseMs: 1_000 })
+    expect(claimed?.idempotencyKey).toBe('k-1')
+    expect(
+      await r.outbox.markDispatched(claimed!.id, { now: T0, token: claimed!.deliveryToken }),
+    ).toBe(true)
+
+    const stats = await r.outbox.stats(T0)
+    expect(stats.pending).toBe(1)
+    expect(stats.dispatched).toBe(1)
+    expect(stats.oldestPendingAt).toBe(at(5_000))
+
+    // Nothing left pending => null, not a stale timestamp.
+    const [rest] = await r.outbox.claim({ now: at(5_000), limit: 1, leaseMs: 1_000 })
+    await r.outbox.markDispatched(rest!.id, { now: at(5_000), token: rest!.deliveryToken })
+    expect((await r.outbox.stats(at(5_000))).oldestPendingAt).toBeNull()
   })
 })
 

@@ -86,6 +86,12 @@ export interface OutboxStats {
   /** Terminal dead-letter count (outbox status `failed`). */
   deadLetter: number
   expiredProcessing: number
+  /**
+   * Oldest `available_at` among `pending` rows, or null when nothing is
+   * pending. Feeds `bk_outbox_lag_seconds`, so it is a timestamp rather than a
+   * duration: the scrape clock decides how late the queue is.
+   */
+  oldestPendingAt: string | null
 }
 
 export interface LeaseRecord {
@@ -111,6 +117,12 @@ export interface TicketStore {
   get(id: TicketId): Promise<TicketRecord | null>
   updateState(id: TicketId, state: TicketState, updatedAt: string): Promise<void>
   listByState(state: TicketState): Promise<TicketRecord[]>
+  /**
+   * Current row count per state, read in one snapshot. States with no rows are
+   * absent, so an empty table yields `{}`. This is a state census, not a
+   * monotonic counter: a ticket that transitions moves between keys.
+   */
+  countByState(): Promise<Record<string, number>>
 }
 
 export interface MandateStore {
@@ -138,6 +150,12 @@ export interface AttemptStore {
    */
   listExpired(now: string): Promise<AttemptRecord[]>
   listSince(since: string): Promise<AttemptRecord[]>
+  /**
+   * Current row count per state, read in one snapshot; states with no rows are
+   * absent. `stalled` here is the reconciled terminal state written by
+   * startup reconciliation, which is what `bk_stalled_attempts_total` reports.
+   */
+  countByState(): Promise<Record<string, number>>
 }
 
 export const ARTIFACT_LIFECYCLE_STATES = ['live', 'tombstoned'] as const
@@ -193,6 +211,31 @@ export interface ArtifactStore {
   get(id: ArtifactId): Promise<ArtifactRecord | null>
   list(filter?: ArtifactFilter): Promise<ArtifactRecord[]>
   /**
+   * Records verification evidence for a catalog row. Returns true when a row
+   * was updated, false when the id is unknown.
+   */
+  markVerified(input: {
+    id: ArtifactId
+    level: 'V0' | 'V1' | 'V2' | 'V3'
+    verifiedAt: string
+    /** When null the existing checksum is kept (`COALESCE(?, checksum)`). */
+    checksum: string | null
+  }): Promise<boolean>
+  /**
+   * Rewrites the recorded location after the bytes moved to a storage backend.
+   *
+   * `path` is the backend location (`/abs/path` or `s3://bucket/key`),
+   * `sizeBytes` the stored byte count and `checksum: null` keeps the digest
+   * already on the row. Only the location trio is touched: verification
+   * evidence and lifecycle stay as they are. Returns false for an unknown id.
+   */
+  relocate(input: {
+    id: ArtifactId
+    path: string
+    sizeBytes: number
+    checksum: string | null
+  }): Promise<boolean>
+  /**
    * Atomically flips live rows to `'tombstoned'` and records `tombstonedAt`.
    * Already-tombstoned and missing ids are reported instead of being rewritten,
    * so a retried apply is observable but never loses catalog history. There is
@@ -228,7 +271,14 @@ export interface ApprovalRecord {
   id: string
   targetId: TargetId
   configDigest: string
+  /** Human-readable label supplied by the operator; an audit value, not proof of identity. */
   approver: string
+  /**
+   * Environment-derived identity (for example `os:$USER`) captured when the
+   * approval was recorded. Four-eyes distinctness counts this when present;
+   * without it the gate falls back to `approver`, which is only a label.
+   */
+  approverOs?: string | null
   decision: 'approve' | 'reject'
   reason: string | null
   createdAt: string

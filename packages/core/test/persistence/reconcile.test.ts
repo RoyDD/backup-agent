@@ -157,7 +157,7 @@ describe('reconcile', () => {
     expect(report.requeuedOutbox).toBe(1)
     // Three stalled attempts each append an audit event plus a failure
     // notification; the pre-existing claimed row is still processing.
-    expect(report.outbox).toEqual({
+    expect(report.outbox).toMatchObject({
       pending: 6,
       processing: 1,
       dispatched: 0,
@@ -279,7 +279,7 @@ describe('reconcile', () => {
     expect(await reconcile(r, T0)).toEqual({
       stalledAttempts: [],
       requeuedOutbox: 0,
-      outbox: { pending: 0, processing: 0, dispatched: 0, deadLetter: 0, expiredProcessing: 0 },
+      outbox: { pending: 0, processing: 0, dispatched: 0, deadLetter: 0, expiredProcessing: 0, oldestPendingAt: null },
     })
   })
 })

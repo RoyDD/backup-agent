@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 
@@ -109,6 +110,7 @@ interface ApprovalRow {
   target_id: string
   config_digest: string
   approver: string
+  approver_os: string | null
   decision: string
   reason: string | null
   created_at: string
@@ -251,6 +253,7 @@ function mapApproval(row: ApprovalRow): ApprovalRecord {
     targetId: row.target_id as TargetId,
     configDigest: row.config_digest,
     approver: row.approver,
+    approverOs: row.approver_os,
     decision: row.decision as ApprovalRecord['decision'],
     reason: row.reason,
     createdAt: row.created_at,
@@ -406,6 +409,15 @@ function createStores(db: DatabaseSync): {
         db.prepare('SELECT * FROM tickets WHERE state = ? ORDER BY created_at').all(state),
       ).map(mapTicket)
     },
+    async countByState() {
+      const counts: Record<string, number> = {}
+      for (const row of asMany<{ state: string; count: number }>(
+        db.prepare('SELECT state, COUNT(*) AS count FROM tickets GROUP BY state').all(),
+      )) {
+        counts[row.state] = row.count
+      }
+      return counts
+    },
   }
 
   const mandates: MandateStore = {
@@ -548,6 +560,15 @@ function createStores(db: DatabaseSync): {
           .all(since, since),
       ).map(mapAttempt)
     },
+    async countByState() {
+      const counts: Record<string, number> = {}
+      for (const row of asMany<{ state: string; count: number }>(
+        db.prepare('SELECT state, COUNT(*) AS count FROM attempts GROUP BY state').all(),
+      )) {
+        counts[row.state] = row.count
+      }
+      return counts
+    },
   }
 
   const assets: AssetStore = {
@@ -592,13 +613,14 @@ function createStores(db: DatabaseSync): {
       // Append-only: never update an earlier decision. Readers resolve the
       // latest decision per approver, so a later reject supersedes an approve.
       db.prepare(
-        `INSERT INTO approvals (id, target_id, config_digest, approver, decision, reason, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO approvals (id, target_id, config_digest, approver, approver_os, decision, reason, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         approval.id,
         approval.targetId,
         approval.configDigest,
         approval.approver,
+        approval.approverOs ?? null,
         approval.decision,
         approval.reason,
         approval.createdAt,
@@ -696,6 +718,30 @@ function createStores(db: DatabaseSync): {
       return asMany<ArtifactRow>(
         db.prepare(`SELECT * FROM artifacts ${where} ORDER BY created_at DESC${limit}`).all(...params),
       ).map(mapArtifact)
+    },
+    async markVerified(input) {
+      // `checksum = COALESCE(?, checksum)` keeps the recorded digest when the
+      // verifier has no new one, so a verification pass never erases evidence.
+      const result = db
+        .prepare(
+          `UPDATE artifacts
+              SET verified_level = ?, verified_at = ?, checksum = COALESCE(?, checksum)
+            WHERE id = ?`,
+        )
+        .run(input.level, input.verifiedAt, input.checksum, input.id)
+      return Number(result.changes) > 0
+    },
+    async relocate(input) {
+      // Same COALESCE contract as `markVerified`: a relocation that has no new
+      // digest must not erase the one already recorded.
+      const result = db
+        .prepare(
+          `UPDATE artifacts
+              SET path = ?, size_bytes = ?, checksum = COALESCE(?, checksum)
+            WHERE id = ?`,
+        )
+        .run(input.path, input.sizeBytes, input.checksum, input.id)
+      return Number(result.changes) > 0
     },
     async tombstone(ids, tombstonedAt) {
       // One savepoint for the whole set: the apply transaction either flips
@@ -840,12 +886,18 @@ function createStores(db: DatabaseSync): {
       )) {
         counts.set(row.status, row.count)
       }
+      const oldestPending = asOne<{ oldest: string | null }>(
+        db
+          .prepare("SELECT MIN(available_at) AS oldest FROM outbox WHERE status = 'pending'")
+          .get(),
+      )
       return {
         pending: counts.get('pending') ?? 0,
         processing: counts.get('processing') ?? 0,
         dispatched: counts.get('dispatched') ?? 0,
         deadLetter: counts.get('failed') ?? 0,
         expiredProcessing: await outbox.countExpiredProcessing(now),
+        oldestPendingAt: oldestPending?.oldest ?? null,
       }
     },
   }
@@ -951,32 +1003,47 @@ function lockStore<T extends object>(store: T, mutex: Mutex): T {
   }) as T
 }
 
-const MIGRATIONS: readonly { name: string; file: URL }[] = [
-  { name: '001_init.sql', file: new URL('./migrations/001_init.sql', import.meta.url) },
-  { name: '002_artifacts.sql', file: new URL('./migrations/002_artifacts.sql', import.meta.url) },
-  { name: '003_attempt_error.sql', file: new URL('./migrations/003_attempt_error.sql', import.meta.url) },
-  { name: '004_assets.sql', file: new URL('./migrations/004_assets.sql', import.meta.url) },
-  { name: '005_model_usage.sql', file: new URL('./migrations/005_model_usage.sql', import.meta.url) },
-  { name: '006_approvals.sql', file: new URL('./migrations/006_approvals.sql', import.meta.url) },
-  { name: '007_approval_history.sql', file: new URL('./migrations/007_approval_history.sql', import.meta.url) },
-  { name: '008_attempt_target.sql', file: new URL('./migrations/008_attempt_target.sql', import.meta.url) },
-  { name: '009_outbox_delivery.sql', file: new URL('./migrations/009_outbox_delivery.sql', import.meta.url) },
-  { name: '010_artifact_lifecycle.sql', file: new URL('./migrations/010_artifact_lifecycle.sql', import.meta.url) },
+/**
+ * Migration files, in apply order. Adding a migration means adding a numbered
+ * `.sql` file *and* an entry here: `build:cli` copies the directory, and the
+ * runtime resolves it beside the bundle unless `BKAGENT_MIGRATIONS` names
+ * another directory (a single-file install cannot ship the SQL).
+ */
+const MIGRATIONS: readonly string[] = [
+  '001_init.sql',
+  '002_artifacts.sql',
+  '003_attempt_error.sql',
+  '004_assets.sql',
+  '005_model_usage.sql',
+  '006_approvals.sql',
+  '007_approval_history.sql',
+  '008_attempt_target.sql',
+  '009_outbox_delivery.sql',
+  '010_artifact_lifecycle.sql',
+  '011_approval_approver_os.sql',
 ]
+
+function migrationPath(name: string): string {
+  const override = process.env['BKAGENT_MIGRATIONS']
+  if (override === undefined || override.trim() === '') {
+    return fileURLToPath(new URL(`./migrations/${name}`, import.meta.url))
+  }
+  return join(resolve(override.trim()), name)
+}
 
 function runMigrations(db: DatabaseSync): void {
   db.exec(
     'CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)',
   )
-  for (const migration of MIGRATIONS) {
-    const applied = db.prepare('SELECT 1 FROM schema_migrations WHERE name = ?').get(migration.name)
+  for (const name of MIGRATIONS) {
+    const applied = db.prepare('SELECT 1 FROM schema_migrations WHERE name = ?').get(name)
     if (applied) continue
-    const sql = readFileSync(fileURLToPath(migration.file), 'utf8')
+    const sql = readFileSync(migrationPath(name), 'utf8')
     db.exec('BEGIN IMMEDIATE')
     try {
       db.exec(sql)
       db.prepare('INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)').run(
-        migration.name,
+        name,
         new Date().toISOString(),
       )
       db.exec('COMMIT')

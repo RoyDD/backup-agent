@@ -1,6 +1,7 @@
 import { missingCapabilities, type Capability, type CapabilitySet } from '../domain/capabilities'
 import { isErrorClass } from '../domain/errors'
 import { RISK_LEVELS } from '../domain/risk'
+import { transportIssues } from '../domain/transport'
 import { compareRisk } from '../domain/risk'
 import {
   BACKOFF_KINDS,
@@ -70,6 +71,12 @@ export function validatePlan(plan: Plan, ctx: PlanValidationContext): PlanValida
 
   if (plan.steps.length === 0) add('SCHEMA', 'steps', 'must contain at least one step')
 
+  if (plan.transport !== undefined) {
+    for (const message of transportIssues(plan.transport)) {
+      add('SCHEMA', 'transport', message)
+    }
+  }
+
   const byId = new Map<string, Step>()
   validateStepList(plan.steps, 'steps', add, byId)
   if (plan.cleanup !== undefined) {
@@ -119,7 +126,17 @@ export function validatePlan(plan: Plan, ctx: PlanValidationContext): PlanValida
   }
 
   // ── CAPABILITY ────────────────────────────────────────────────────────────
-  for (const capability of missingCapabilities(ctx.requiredCapabilities, ctx.declaredCapabilities)) {
+  // The request context states what the caller asked for; the Plan states what
+  // its own steps need. Both must be declared by the provider, so a Plan that
+  // requires a capability cannot slip through a caller that passed an empty
+  // requirement list.
+  const requiredCapabilities: readonly Capability[] = [
+    ...new Set<Capability>([
+      ...ctx.requiredCapabilities,
+      ...(plan.requires?.capabilities ?? []),
+    ]),
+  ]
+  for (const capability of missingCapabilities(requiredCapabilities, ctx.declaredCapabilities)) {
     add('CAPABILITY', 'requiredCapabilities', `provider does not declare "${capability}"`)
   }
 

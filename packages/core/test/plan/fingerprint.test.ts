@@ -65,3 +65,14 @@ describe('matchFingerprint', () => {
     })
   })
 })
+
+describe('transport in the plan digest', () => {
+  it('changes the digest when only the transport changes', () => {
+    const local = makePlan()
+    const remote = makePlan({
+      transport: { kind: 'ssh', host: 'dba@db1', knownHostsFile: '/etc/kh' },
+    })
+    expect(fingerprintPlan(local)).not.toBe(fingerprintPlan(remote))
+    expect(fingerprintPlan(remote)).toBe(fingerprintPlan({ ...remote }))
+  })
+})

@@ -1,6 +1,8 @@
+import type { Capability } from './capabilities'
 import type { ErrorClass } from './errors'
 import type { MandateId, PlanId, TargetId, TicketId } from './ids'
 import type { RiskLevel } from './risk'
+import type { TransportSpec } from './transport'
 
 export const STEP_KINDS = ['probe', 'exec', 'transfer', 'verify', 'write-file', 'notify'] as const
 export type StepKind = (typeof STEP_KINDS)[number]
@@ -97,11 +99,22 @@ export interface Plan {
   readonly cleanup?: readonly Step[]
   readonly resources: ResourceEstimate
   readonly risk: RiskLevel
+  /**
+   * Capabilities this Plan needs from its provider. Validated fail-closed: a
+   * provider that does not declare one of them rejects the Plan before approval.
+   */
+  readonly requires?: PlanRequirements
+  /**
+   * Where the steps run. Absent means `local`, so plans built before transports
+   * existed keep their behaviour. A remote plan must never be executed with the
+   * control plane's own filesystem or environment by accident.
+   */
+  readonly transport?: TransportSpec
 }
 
 /** Capabilities a Plan declares as required; validated against the provider. */
 export interface PlanRequirements {
-  readonly capabilities: readonly string[]
+  readonly capabilities: readonly Capability[]
 }
 
 export const DEFAULT_RETRY_POLICY: RetryPolicy = {

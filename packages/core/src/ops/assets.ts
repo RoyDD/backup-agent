@@ -17,6 +17,14 @@ export function isVerifiedLevel(level: string | null | undefined): boolean {
 }
 
 /**
+ * The instant a restore point was proven. A V-level earned later must not
+ * inherit the age of the bytes it was written over.
+ */
+function restorePointAt(artifact: ArtifactRecord): string {
+  return artifact.verifiedAt ?? artifact.createdAt
+}
+
+/**
  * RPO attainment is measured against verified restore points, never against
  * "the last backup succeeded".
  */
@@ -32,7 +40,7 @@ export function evaluateAssetRpo(
           artifact.targetId === asset.targetId &&
           isVerifiedLevel(artifact.verifiedLevel),
       )
-      .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+      .sort((a, b) => Date.parse(restorePointAt(b)) - Date.parse(restorePointAt(a)))
     const latest = verified[0]
     if (latest === undefined) {
       return {
@@ -44,11 +52,12 @@ export function evaluateAssetRpo(
         verifiedLevel: null,
       }
     }
-    const ageMinutes = (now.getTime() - Date.parse(latest.createdAt)) / 60_000
+    const lastVerifiedAt = restorePointAt(latest)
+    const ageMinutes = (now.getTime() - Date.parse(lastVerifiedAt)) / 60_000
     return {
       targetId: asset.targetId,
       rpoMinutes: asset.rpoMinutes,
-      lastVerifiedAt: latest.createdAt,
+      lastVerifiedAt,
       ageMinutes,
       withinRpo: ageMinutes <= asset.rpoMinutes,
       verifiedLevel: latest.verifiedLevel,

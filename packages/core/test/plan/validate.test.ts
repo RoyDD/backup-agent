@@ -130,6 +130,33 @@ describe('validatePlan', () => {
     )
   })
 
+  it('rejects capabilities the plan itself requires but the provider does not declare', () => {
+    const issues = validatePlan(
+      makePlan({ requires: { capabilities: ['pitr'] } }),
+      makeContext(),
+    )
+    expect(
+      issues.some(
+        (issue) =>
+          issue.code === 'CAPABILITY' &&
+          issue.path === 'requiredCapabilities' &&
+          issue.message.includes('pitr'),
+      ),
+    ).toBe(true)
+  })
+
+  it('accepts plan-declared capabilities the provider declares', () => {
+    const plan = makePlan({ requires: { capabilities: ['logical', 'pitr'] } })
+    expect(validatePlan(plan, makeContext({ declaredCapabilities: new Set(['logical', 'pitr']) }))).toEqual(
+      [],
+    )
+  })
+
+  it('accepts a plan without declared requirements', () => {
+    expect(makePlan().requires).toBeUndefined()
+    expect(validatePlan(makePlan(), makeContext())).toEqual([])
+  })
+
   it('requires a live mandate with matching ids', () => {
     expect(validatePlan(makePlan(), makeContext({ mandate: null })).some((i) => i.code === 'PERMISSION')).toBe(
       true,
@@ -208,5 +235,38 @@ describe('validatePlan', () => {
     expect(
       validatePlan(withArgv, makeContext()).some((issue) => issue.path.endsWith('.argv')),
     ).toBe(true)
+  })
+})
+
+describe('transport validation', () => {
+  it('requires host-key pinning for ssh plans', () => {
+    const plan = makePlan({ transport: { kind: 'ssh', host: 'dba@db1' } as never })
+    const issues = validatePlan(plan, makeContext())
+    const transport = issues.filter((issue) => issue.path === 'transport')
+    expect(transport.length).toBeGreaterThan(0)
+    expect(transport.map((issue) => issue.message).join(' ')).toContain('knownHostsFile')
+  })
+
+  it('accepts a complete ssh transport and a complete kubectl transport', () => {
+    const ssh = makePlan({
+      transport: {
+        kind: 'ssh',
+        host: 'dba@db1',
+        knownHostsFile: '/etc/backup-agent/known_hosts',
+      },
+    })
+    expect(validatePlan(ssh, makeContext())).toEqual([])
+
+    const kubectl = makePlan({ transport: { kind: 'kubectl', pod: 'db-0' } })
+    expect(validatePlan(kubectl, makeContext())).toEqual([])
+  })
+
+  it('rejects an unknown transport kind and a kubectl plan without a pod', () => {
+    const unknown = makePlan({ transport: { kind: 'carrier-pigeon' } as never })
+    expect(validatePlan(unknown, makeContext()).map((issue) => issue.path)).toContain('transport')
+
+    const noPod = makePlan({ transport: { kind: 'kubectl' } as never })
+    const issues = validatePlan(noPod, makeContext()).filter((issue) => issue.path === 'transport')
+    expect(issues.map((issue) => issue.message).join(' ')).toContain('pod')
   })
 })

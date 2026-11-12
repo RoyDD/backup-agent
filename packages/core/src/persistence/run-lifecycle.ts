@@ -36,6 +36,12 @@ export interface RunArtifactInput {
   readonly verifiedLevel: string | null
   /** Measured by the caller when it already walked the path. */
   readonly sizeBytes?: number
+  /**
+   * Content digest. The control plane fills this when the bytes were stored
+   * through a `Storage` sink; a local artifact without a digest keeps `null`
+   * rather than a value nobody computed.
+   */
+  readonly checksum?: string | null
 }
 
 export interface StartRunInput {
@@ -384,7 +390,7 @@ export async function finishRunInTransaction(
       parentId: null,
       path: input.artifact.path,
       sizeBytes: input.artifact.sizeBytes ?? pathSize(input.artifact.path),
-      checksum: null,
+      checksum: input.artifact.checksum ?? null,
       verifiedLevel: input.artifact.verifiedLevel,
       verifiedAt: input.artifact.verifiedLevel === null ? null : now,
       protected: false,
