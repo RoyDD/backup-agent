@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   createHandlers,
+  createRestoreToolHandler,
   parseCliResult,
   requireApproval,
 } from '../index.js'
@@ -62,6 +63,20 @@ describe('dsh plugin handlers', () => {
     expect(calls[0]).toContain('--yes')
     expect(calls[0]).toContain('--create-database')
     expect(calls[0]).toContain('--clean')
+  })
+
+  it('requires dsh approval for a plain non-clean restore', async () => {
+    let approvals = 0
+    const ctx = {
+      get: () => ({ request: async () => { approvals += 1; return 'allowed-once' } }),
+    }
+    const restore = createRestoreToolHandler(ctx, async (args) => args)
+    const result = await restore(
+      { input: '/tmp/plain.sql', format: 'plain' },
+      { agent: {}, callId: 'c', signal: new AbortController().signal },
+    )
+    expect(approvals).toBe(1)
+    expect(result).toEqual({ input: '/tmp/plain.sql', format: 'plain' })
   })
 
   it('fails loudly on a non-zero exit', () => {

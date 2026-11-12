@@ -147,12 +147,20 @@ describe('buildLogicalRestorePlan', () => {
     expect(plan.steps[1]?.dependsOn).toEqual(['create-database'])
   })
 
-  it('is reversible without clean or database creation', () => {
+  it('marks every restore destructive, even without clean or database creation', () => {
     const plan = buildLogicalRestorePlan(
       { connection, inputPath: '/tmp/app.dump', format: 'custom', database: 'app' },
       ctx,
     )
-    expect(plan.risk).toBe('reversible')
+    expect(plan.risk).toBe('destructive')
+  })
+
+  it('marks plain SQL restores destructive because input can contain DROP statements', () => {
+    const plan = buildLogicalRestorePlan(
+      { connection, inputPath: '/tmp/app.sql', format: 'plain', database: 'app' },
+      ctx,
+    )
+    expect(plan.risk).toBe('destructive')
   })
 })
 

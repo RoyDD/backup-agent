@@ -11,7 +11,7 @@ P0 骨架、P0.5 故障模式目录、P1 逻辑备份与恢复均已完成：
 - P1：`pg_dump` / `psql` 逻辑备份与恢复、Step DAG 执行器、恢复校验（临时库行数比对）、`bkagent backup|restore|verify`。
 - P2：`pg_basebackup` 物理备份、`pg_verifybackup` 完整性校验、PITR 计划（配置写入、恢复启动、promote 断言）、`bkagent backup --mode physical` 与 `bkagent pitr`。
 - P3：pgBackRest 与 WAL-G 编排（备份/恢复/校验/expire/delete retain）、`pgbackrest-*` 与 `walg-*` 命令；两条链路均完成真实集群验证（见 `docs/provider-integration-2026-11-12.md`）。
-- P4：GFS 保留（可达性分析）、运行持久化、`catalog` / `retain` / `report` / `metrics` / `capacity` / `watchdog` / `trace` / `notify-test` 命令、systemd 与 cron 模板。
+- P4：GFS 保留（可达性分析，按 target 计算）、运行持久化、`catalog` / `retain` / `report` / `metrics` / `capacity` / `watchdog` / `trace` / `notify-test` 命令、systemd 与 cron 模板。`retain --apply` 只把符合策略的 catalog 元数据标记为 tombstone（保留行、路径与 lineage，`bytes` 不回收），需绑定 dry-run digest、`--target`、`--yes`，生产 target 另需双人审批；`asset-set --protected` 的 target 整目标豁免且 apply 拒绝；`catalog --history` 可查看含 tombstone 的行（plan 关联行仍可用 `trace`）；provider 仓库仍由 `pgbackrest expire` / `wal-g delete retain` 清理。
 
 - P5：dsh 工具插件（`pg_inspect` / `pg_backup` / `pg_restore` / `pg_verify` / `pg_catalog` / `pg_report`）、`pg-dba` Preset 与六项技能、安装脚本；见 `docs/dsh-integration.md`。
 
@@ -60,19 +60,21 @@ pnpm bkagent pgbackrest-backup  --config /etc/pgbackrest.conf --stanza main --en
 pnpm bkagent pgbackrest-restore --config /etc/pgbackrest.conf --stanza main --data-dir /restore --yes
 pnpm bkagent walg-backup  --data-dir /var/lib/postgresql/data
 pnpm bkagent walg-restore --data-dir /restore --yes
+pnpm bkagent outbox-dispatch --db .bkagent/control.db --limit 50
 pnpm bkagent report   --db .bkagent/control.db --since 7d
 pnpm bkagent metrics  --db .bkagent/control.db
-pnpm bkagent retain   --db .bkagent/control.db --daily 7 --weekly 4 --monthly 12 --apply
+pnpm bkagent retain   --db .bkagent/control.db --daily 7 --weekly 4 --monthly 12 --target 127.0.0.1:5432/app
+pnpm bkagent retain   --db .bkagent/control.db --daily 7 --weekly 4 --monthly 12 --target 127.0.0.1:5432/app --apply --yes --digest <digest>
 pnpm bkagent dashboard --db .bkagent/control.db --out /tmp/dashboard.html
 ```
 
-`inspect` 通过 `psql` 读取实例信息；`restore` 在建库或 `--clean` 时属破坏性操作，须显式 `--yes`。凭据仅经子进程环境变量传递，不出现在 argv 或输出中。
+`inspect` 通过 `psql` 读取实例信息；所有逻辑恢复都按破坏性操作处理（输入可包含 `DROP` 等 SQL），须显式 `--yes`、登记目标 Asset，生产目标还需双人审批。凭据仅经子进程环境变量传递，不出现在 argv 或输出中。
 
 ## 约束
 
 - 确定性核心为状态唯一写入者；智能体层只做意图解析与呈现。
 - `Plan` 为 Step DAG，每步必须声明 `idempotencyKey`，执行前重新求值前置条件。
-- 外部副作用与状态迁移同事务写入 Outbox；投递至少一次，接收端按 `outbox_id` 去重。
+- 外部副作用与状态迁移同事务写入 Outbox；`bkagent outbox-dispatch` 独立投递，至少一次，接收端按 `outbox_id` 去重（不承诺 exactly-once）。
 - 租约带单调递增 fencing token；过期写入被拒绝。
 - 控制库仅经 `Repository` 端口访问。
 - 使用 `node:sqlite`（Node >= 22.5，仍标记为实验特性）。

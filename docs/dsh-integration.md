@@ -32,20 +32,20 @@ scripts/install-dsh.sh web
 |---|---|---|
 | `pg_inspect` | 实例版本、角色、WAL、归档、数据库清单 | 只读 |
 | `pg_backup` | 逻辑/物理备份，可写控制库 | 只读 |
-| `pg_restore` | 逻辑恢复；建库或 `--clean` 走审批 | 破坏性 |
+| `pg_restore` | 逻辑恢复；所有输入均按可能含破坏性 SQL 处理并走审批 | 破坏性 |
 | `pg_verify` | 恢复到临时库并比对行数 | 可逆 |
 | `pg_catalog` | 备份产物清单 | 只读 |
 | `pg_report` | 运行报表 | 只读 |
 | `kb_search` | 在 SAG2 证据库中检索原文段落（source#ordinal + 标题路径） | 只读 |
 
-`pg_restore` 在 `createDatabase` 或 `clean` 为真时调用 `ctx.approval.request()`；没有发起主体或审批服务不可用时**失败关闭**。
+每次 `pg_restore` 调用都会先调用 `ctx.approval.request()`；即使没有 `createDatabase` 或 `clean`，转储输入也可能含有 `DROP` 等破坏性 SQL。没有发起主体或审批服务不可用时**失败关闭**。CLI 还会要求精确登记 Asset、`--yes`，并对生产目标复核双人审批。
 
 ## 技能
 
 `presets/pg-dba/skills/`：
 
 - `pg-backup`：逻辑/物理/pgBackRest/WAL-G 选型
-- `pg-restore`：目标库、属主、扩展、`--clean` 风险
+- `pg-restore`：目标库、属主、扩展、恢复授权与 `--clean` 风险
 - `pg-pitr`：可恢复窗口、WAL 连续性、promote 断言
 - `pg-verify`：V0–V3 校验与 VRP
 - `pg-troubleshoot`：按故障目录签名定位

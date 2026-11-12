@@ -223,7 +223,55 @@ describe('four-eyes approvals', () => {
     expect(expired.ok).toBe(false)
   })
 
-  it('escalates destructive restores on protected production assets', () => {
+  it('resolves one decision per approver with the latest decision winning', () => {
+    const superseded = fourEyesStatus(
+      'production-destructive',
+      [
+        approval('alice', '2026-01-01T00:10:00.000Z', 'approve'),
+        approval('alice', '2026-01-01T00:20:00.000Z', 'reject'),
+        approval('bob', '2026-01-01T00:20:00.000Z', 'approve'),
+      ],
+      now,
+    )
+    expect(superseded.distinct).toBe(1)
+    expect(superseded.ok).toBe(false)
+
+    const reversed = fourEyesStatus(
+      'production-destructive',
+      [
+        approval('alice', '2026-01-01T00:10:00.000Z', 'reject'),
+        approval('alice', '2026-01-01T00:20:00.000Z', 'approve'),
+        approval('bob', '2026-01-01T00:20:00.000Z', 'approve'),
+      ],
+      now,
+    )
+    expect(reversed.ok).toBe(true)
+  })
+
+  it('ignores future-dated approvals', () => {
+    const status = fourEyesStatus(
+      'production-destructive',
+      [approval('alice', '2026-01-01T02:00:00.000Z'), approval('bob')],
+      now,
+    )
+    expect(status.distinct).toBe(1)
+    expect(status.ok).toBe(false)
+  })
+
+  it('excludes requester self-approval from the distinct count', () => {
+    const status = fourEyesStatus(
+      'production-destructive',
+      [approval('os:roy'), approval('alice'), approval('bob')],
+      now,
+      3_600_000,
+      ['os:roy', 'os:roy'],
+    )
+    expect(status.distinct).toBe(2)
+    expect(status.ok).toBe(true)
+    expect(status.selfApproved).toEqual(['os:roy'])
+  })
+
+  it('escalates every destructive plan on a production asset', () => {
     const production = {
       targetId: asTargetId('pg-prod'),
       engine: 'postgres',
@@ -236,7 +284,14 @@ describe('four-eyes approvals', () => {
       protected: true,
     }
     expect(escalateRisk('destructive', production)).toBe('production-destructive')
-    expect(escalateRisk('destructive', { ...production, protected: false })).toBe('destructive')
+    // `protected` is a retention flag, not a four-eyes bypass.
+    expect(escalateRisk('destructive', { ...production, protected: false })).toBe(
+      'production-destructive',
+    )
+    expect(escalateRisk('destructive', { ...production, environment: 'staging' })).toBe(
+      'destructive',
+    )
+    expect(escalateRisk('reversible', production)).toBe('reversible')
     expect(escalateRisk('destructive', null)).toBe('destructive')
   })
 })

@@ -1,6 +1,6 @@
 ---
 name: pg-restore
-description: 规划并执行 PostgreSQL 逻辑恢复，处理目标库、属主、扩展与 --clean 风险。
+description: 规划并执行 PostgreSQL 逻辑恢复，处理目标库、属主、扩展与恢复授权。
 whenToUse: 用户要求恢复备份、回答“能不能恢复”、或需要把备份还原到新库/新实例时。
 ---
 
@@ -17,13 +17,14 @@ whenToUse: 用户要求恢复备份、回答“能不能恢复”、或需要把
 | 场景 | 做法 |
 |---|---|
 | 新库验证 | `pg_restore --create-database`，目标名带时间戳 |
-| 覆盖测试库 | `--clean --if-exists`，必须先获得审批 |
+| 覆盖测试库 | `--clean --if-exists`，必须先获得执行确认 |
 | 跨版本 | 目标版本不低于源版本；否则先升级或使用逻辑迁移 |
 | 属主不存在 | 使用 `--no-owner`，或先创建角色映射 |
 
 ## 风险
 
-- `--clean` 会删除目标库中同名对象，属破坏性操作；`pg_restore` 工具会拒绝未经审批的调用。
+- 所有逻辑恢复都按破坏性操作处理：输入可能包含 `DROP` 等 SQL，即使没有 `--clean` 也必须显式确认、注册目标 Asset；生产目标还需要两名不同审批人当前批准。
+- `--clean` 会删除目标库中同名对象；只能在经过审批的隔离目标上使用，禁止绕过 `bkagent` 直接拼接 `pg_restore` 或 `psql` 命令。
 - 恢复后必须校验：Schema、行数、约束、序列；调用 `pg_verify` 获得证据。
 - 恢复失败时不要反复重试同一计划；先读取 stderr 与失败分类（transient/permanent/manual）。
 

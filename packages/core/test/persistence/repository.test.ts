@@ -128,4 +128,33 @@ describe('SqliteRepository', () => {
       }),
     ).rejects.toThrow()
   })
+
+  it('keeps approval decisions append-only and ordered', async () => {
+    const r = await open()
+    const targetId = asTargetId('pg-prod')
+    const base = {
+      targetId,
+      configDigest: 'cfg-1',
+      approver: 'alice',
+      reason: null,
+    }
+    await r.approvals.record({
+      ...base,
+      id: 'apr_1',
+      decision: 'approve',
+      createdAt: '2026-01-01T00:10:00.000Z',
+    })
+    await r.approvals.record({
+      ...base,
+      id: 'apr_2',
+      decision: 'reject',
+      createdAt: '2026-01-01T00:20:00.000Z',
+    })
+
+    const decisions = await r.approvals.listFor(targetId, 'cfg-1', '2026-01-01T00:00:00.000Z')
+    expect(decisions.map((decision) => `${decision.id}:${decision.decision}`)).toEqual([
+      'apr_1:approve',
+      'apr_2:reject',
+    ])
+  })
 })

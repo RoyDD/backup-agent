@@ -10,18 +10,15 @@ import {
   PrincipalError,
   WebhookNotifier,
   asArtifactId,
-  asAttemptId,
-  asMandateId,
   asPlanId,
   asTargetId,
   asTicketId,
   buildOpsReport,
   checkBudget,
+  classifyRetentionProvider,
   connectionEnv,
-  escalateRisk,
   estimateCost,
   evaluateAssetRpo,
-  fingerprintPlan,
   fourEyesStatus,
   forecastCapacity,
   newId,
@@ -30,25 +27,24 @@ import {
   planRetention,
   policyFor,
   preparePlan,
-  requiredApprovals,
+  providerRetentionGuidance,
   renderDashboard,
   renderMetrics,
   renderReportMarkdown,
   resolvePrincipalDsn,
+  retentionDigest,
+  riskAtLeast,
+  tombstoneRetention,
+  toRetentionArtifact,
   validateAsset,
-  requiresApproval,
-  runPlan,
-  validatePlan,
   withDatabase,
   type Executor,
   type InstanceInfo,
   type LogicalBackupRequest,
   type LogicalFormat,
   type LogicalRestoreRequest,
-  type MandateRecord,
   type Plan,
   type PlanBuildContext,
-  type PlanValidationIssue,
 } from '@backup-agent/core'
 import {
   ProbeError,
@@ -68,10 +64,28 @@ import {
   type PitrRestoreRequest,
 } from '@backup-agent/engine-postgres'
 
-import { createSqliteRepository, reconcile } from '@backup-agent/core/persistence'
-import type { AssetDescriptor, Repository } from '@backup-agent/core'
+import {
+  createSqliteRepository,
+  dispatchOutbox,
+  reconcile,
+} from '@backup-agent/core/persistence'
+import type { ArtifactRecord, AssetDescriptor, Repository } from '@backup-agent/core'
 
 import { inspectInstance, parseDsn } from './inspect'
+import {
+  DEFAULT_CONTROL_DB,
+  buildPlanContext,
+  executePlan,
+  planIssueText,
+  reportPlanOutcome,
+  validateForExecution,
+} from './execute-plan'
+import {
+  authorizeDestructivePlan,
+  identityDenialMessage,
+  provenIdentity,
+} from './destructive-gate'
+import { createOutboxHandlers } from './outbox'
 
 const USAGE = `bkagent — PostgreSQL backup and restore agent
 
@@ -82,27 +96,30 @@ Usage:
                   [--table t]... [--schema s]... [--wal-method stream|fetch] [--label L]
   bkagent restore --dsn <uri> --input <path> [--database <db>] [--format custom|directory|plain]
                   [--create-database] [--clean] [--if-exists] [--no-owner] [--jobs N] [--yes]
+                  [--db <control-db>]
   bkagent verify  --dsn <uri> --input <path> [--database <source-db>] [--format custom|directory|plain]
                   [--jobs N] [--no-owner] [--keep-scratch]
   bkagent pitr    --dsn <uri> --data-dir <dir> --port <n> --log <path> --restore-command <cmd>
                   (--target-time <ts> | --target-lsn <lsn> | --target-name <name> | --target-xid <xid>)
-                  [--action promote|pause|shutdown] [--verify-sql <sql>] [--yes]
+                  [--action promote|pause|shutdown] [--verify-sql <sql>] [--yes] [--db <control-db>]
   bkagent pgbackrest-backup  --config <path> --stanza <name> [--type full|diff|incr] [--ensure-stanza]
+                             [--db <control-db>]
   bkagent pgbackrest-restore --config <path> --stanza <name> --data-dir <dir>
                              [--target-type time|lsn|xid|name|immediate] [--target <value>]
-                             [--start-port <n>] [--log <path>] [--yes]
-  bkagent pgbackrest-expire  --config <path> --stanza <name> [--yes]
-  bkagent walg-backup  --data-dir <PGDATA> [--walg <bin>]
-  bkagent walg-restore --data-dir <dir> [--backup LATEST] [--start-port <n>] [--yes]
-  bkagent walg-prune   --retain-full <n> [--walg <bin>] [--yes]
+                             [--start-port <n>] [--log <path>] [--yes] [--db <control-db>]
+  bkagent pgbackrest-expire  --config <path> --stanza <name> [--yes] [--db <control-db>]
+  bkagent walg-backup  --data-dir <PGDATA> [--walg <bin>] [--db <control-db>]
+  bkagent walg-restore --data-dir <dir> [--backup LATEST] [--start-port <n>] [--yes] [--db <control-db>]
+  bkagent walg-prune   --retain-full <n> [--walg <bin>] [--yes] [--db <control-db>]
   bkagent artifact-add --db <path> --target <id> --provider <p> --kind <k> --path <path>
                        [--parent <id>] [--plan <id>] [--size N] [--verified-level V0..V3] [--protected]
-  bkagent catalog  --db <path> [--target <id>] [--provider <p>] [--since <iso|Nd>] [--limit N]
-  bkagent retain   --db <path> --daily N --weekly N --monthly N [--target <id>] [--apply]
+  bkagent catalog  --db <path> [--target <id>] [--provider <p>] [--since <iso|Nd>] [--limit N] [--history]
+  bkagent retain   --db <path> --daily N --weekly N --monthly N [--target <id>] [--apply --yes --digest <d>]
   bkagent report   --db <path> [--since <iso|Nd>] [--format markdown|json]
   bkagent metrics  --db <path>
   bkagent capacity --db <path> [--threshold-gb N] [--days N]
   bkagent watchdog --db <path>
+  bkagent outbox-dispatch --db <path> [--limit N] [--max-attempts N]
   bkagent trace    --db <path> (--ticket <id> | --plan <id>)
   bkagent notify-test --url <url> [--severity P1|P2|P3|P4] [--title <text>]
   bkagent dashboard --db <path> (--out <file> | --serve [--port N]) [--since <iso|Nd>]
@@ -121,6 +138,16 @@ Usage:
 
 Environment:
   BKAGENT_DSN    Default DSN when --dsn is omitted
+  BKAGENT_DB     Control database when --db is omitted (default .bkagent/control.db)
+  BKAGENT_WEBHOOK_URL  Failure-notification webhook for outbox-dispatch (never argv)
+
+Destructive plans (all logical restores, pitr, pgbackrest-restore,
+pgbackrest-expire, walg-restore, walg-prune) fail closed unless all hold:
+  - the live probe proves the target systemIdentifier and the plan matches it;
+  - --yes is passed;
+  - the control database has an asset registered for the exact plan targetId;
+  - if that asset is in the production environment, two distinct current approvals exist
+    for the plan digest (see bkagent approve / bkagent approvals).
 
 Exit codes:
   0 success   1 execution failed   2 usage   3 connection failure   4 plan/probe failure
@@ -156,63 +183,6 @@ function principalFor(explicit: string | undefined, env: NodeJS.ProcessEnv): str
   return `os:${user}`
 }
 
-function planContext(instance: InstanceInfo, digest: string): PlanBuildContext {
-  const now = new Date().toISOString()
-  return {
-    ticketId: asTicketId(newId('tkt')),
-    mandateId: asMandateId(newId('mnd')),
-    now,
-    instance,
-    configDigest: digest,
-  }
-}
-
-function mandateFor(plan: Plan, principalId: string): MandateRecord {
-  const now = new Date().toISOString()
-  return {
-    id: plan.mandateId,
-    ticketId: plan.ticketId,
-    principalId,
-    scope: plan.provider,
-    policyVersion: 'cli',
-    allowedRisk: plan.risk,
-    issuedAt: now,
-    expiresAt: new Date(Date.parse(now) + 3_600_000).toISOString(),
-  }
-}
-
-function validate(plan: Plan, principalId: string): PlanValidationIssue[] {
-  const now = new Date().toISOString()
-  return validatePlan(plan, {
-    now,
-    declaredCapabilities: postgresEngine.capabilities,
-    requiredCapabilities: [],
-    mandate: mandateFor(plan, principalId),
-    resources: { availableBytes: Number.MAX_SAFE_INTEGER, maxConcurrency: 8 },
-    policyValid: true,
-  })
-}
-
-async function applyPlan(
-  plan: Plan,
-  instance: InstanceInfo,
-  executor: Executor,
-  deps: CliDeps,
-  stateDir: string | undefined,
-  env?: Readonly<Record<string, string>>,
-): Promise<Awaited<ReturnType<typeof runPlan>>> {
-  const writeError = deps.stderr ?? ((text: string) => process.stderr.write(text))
-  return runPlan(plan, {
-    executor,
-    ...(env === undefined ? {} : { env }),
-    systemIdentifier: instance.systemIdentifier,
-    ...(stateDir === undefined ? {} : { stateDir }),
-    onStep: (event) => {
-      if (event.type === 'start') writeError(`[${event.stepId}] running\n`)
-    },
-  })
-}
-
 function syntheticInstance(): InstanceInfo {
   return {
     version: 'unknown',
@@ -230,21 +200,23 @@ function syntheticInstance(): InstanceInfo {
   }
 }
 
+async function probeTarget(
+  dsn: string | undefined,
+  executor: Executor,
+): Promise<InstanceInfo> {
+  return dsn === undefined ? syntheticInstance() : postgresEngine.probe(executor, parseDsn(dsn))
+}
+
 async function providerContext(
   dsn: string | undefined,
   executor: Executor,
   digest: string,
 ): Promise<PlanBuildContext> {
-  const instance =
-    dsn === undefined ? syntheticInstance() : await postgresEngine.probe(executor, parseDsn(dsn))
-  return planContext(instance, digest)
+  const instance = await probeTarget(dsn, executor)
+  return buildPlanContext(instance, digest)
 }
 
-const DEFAULT_DB_PATH = '.bkagent/control.db'
-
-function resolveDb(value: string | undefined): string {
-  return value ?? process.env.BKAGENT_DB ?? DEFAULT_DB_PATH
-}
+const DEFAULT_DB_PATH = DEFAULT_CONTROL_DB
 
 async function withRepo<T>(file: string, fn: (repo: Repository) => Promise<T>): Promise<T> {
   const repo = await createSqliteRepository({ filename: file })
@@ -292,88 +264,6 @@ function parseNonNegativeInt(value: string | undefined, name: string): number {
   return parsed
 }
 
-async function persistRun(
-  file: string,
-  input: {
-    plan: Plan
-    principalId: string
-    result: Awaited<ReturnType<typeof runPlan>>
-    artifact?: { path: string; kind: string; verifiedLevel: string | null }
-  },
-): Promise<void> {
-  const now = new Date().toISOString()
-  await withRepo(file, async (repo) => {
-    await repo.transaction(async (tx) => {
-      const ticketId = asTicketId(newId('tkt'))
-      await tx.tickets.insert({
-        id: ticketId,
-        principalId: input.principalId,
-        targetId: input.plan.targetId,
-        goal: `${input.plan.provider} ${input.plan.risk}`,
-        state: input.result.status === 'succeeded' ? 'succeeded' : 'failed',
-        createdAt: now,
-        updatedAt: now,
-      })
-      await tx.mandates.insert({
-        id: input.plan.mandateId,
-        ticketId,
-        principalId: input.principalId,
-        scope: input.plan.provider,
-        policyVersion: 'cli',
-        allowedRisk: input.plan.risk,
-        issuedAt: now,
-        expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
-      })
-      await tx.plans.insert({
-        id: input.plan.planId,
-        ticketId,
-        mandateId: input.plan.mandateId,
-        state: 'dispatched',
-        payload: input.plan,
-        fingerprintDigest: fingerprintPlan(input.plan),
-        createdAt: now,
-        updatedAt: now,
-      })
-      const failed = input.result.steps.find((step) => step.status === 'failed')
-      await tx.attempts.insert({
-        id: asAttemptId(newId('att')),
-        planId: input.plan.planId,
-        state: input.result.status === 'succeeded' ? 'succeeded' : 'failed',
-        owner: 'cli',
-        leaseToken: 0,
-        leaseExpiresAt: null,
-        startedAt: now,
-        finishedAt: now,
-        exitCode: failed?.exitCode ?? 0,
-        errorClass: failed?.errorClass ?? null,
-      })
-      if (input.artifact !== undefined && input.result.status === 'succeeded') {
-        let sizeBytes = 0
-        try {
-          sizeBytes = pathSize(input.artifact.path)
-        } catch {
-          sizeBytes = 0
-        }
-        await tx.artifacts.insert({
-          id: asArtifactId(newId('art')),
-          planId: input.plan.planId,
-          targetId: input.plan.targetId,
-          provider: input.plan.provider,
-          kind: input.artifact.kind,
-          parentId: null,
-          path: input.artifact.path,
-          sizeBytes,
-          checksum: null,
-          verifiedLevel: input.artifact.verifiedLevel,
-          verifiedAt: input.artifact.verifiedLevel === null ? null : now,
-          protected: false,
-          createdAt: now,
-        })
-      }
-    })
-  })
-}
-
 function parseSince(value: string | undefined, fallbackDays = 7): string {
   if (value === undefined) {
     return new Date(Date.now() - fallbackDays * 86_400_000).toISOString()
@@ -403,10 +293,6 @@ function parsePositiveInt(value: string | undefined, name: string): number | und
   return parsed
 }
 
-function issueText(issues: readonly PlanValidationIssue[]): string {
-  return JSON.stringify({ ok: false, issues }, null, 2)
-}
-
 function handleError(error: unknown, writeError: (text: string) => void): number {
   if (error instanceof ConnectionError) {
     writeError(`bkagent: INVALID_DSN: ${error.message}\n`)
@@ -425,6 +311,8 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
   const writeError = deps.stderr ?? ((text: string) => process.stderr.write(text))
   const env = deps.env ?? process.env
   const executor = deps.executor ?? new LocalExecutor()
+  const resolveDb = (value: string | undefined): string =>
+    value ?? env.BKAGENT_DB ?? DEFAULT_DB_PATH
 
   const [command, ...rest] = argv
   if (command === undefined || command === 'help' || command === '--help' || command === '-h') {
@@ -538,37 +426,27 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
             ...(values['max-rate'] === undefined ? {} : { maxRate: values['max-rate'] }),
             parseWal: values['parse-wal'],
           }
-          const ctx = planContext(instance, requestDigest(physical))
+          const ctx = buildPlanContext(instance, requestDigest(physical))
           const plan = buildPhysicalBackupPlan(physical, ctx)
-          const issues = validate(plan, principal)
+          const issues = validateForExecution(plan, principal)
           if (issues.length > 0) {
-            write(`${issueText(issues)}\n`)
+            write(`${planIssueText(issues)}\n`)
             return 4
           }
-          const result = await applyPlan(
-            plan,
-            instance,
+          const { result } = await executePlan(plan, instance, {
             executor,
-            deps,
-            values['state-dir'],
-            connectionEnv(connection),
-          )
-          if (values.db !== undefined) {
-            await persistRun(resolveDb(values.db), {
-              plan,
-              principalId: principal,
-              result,
-              artifact: {
-                path: values.out,
-                kind: 'full',
-                verifiedLevel: format === 'plain' ? 'V0' : null,
-              },
-            })
-          }
-          write(
-            `${JSON.stringify({ planId: plan.planId, risk: plan.risk, steps: plan.steps.map((step) => step.stepId), result }, null, 2)}\n`,
-          )
-          return result.status === 'succeeded' ? 0 : 1
+            writeError,
+            controlDb: resolveDb(values.db),
+            principalId: principal,
+            stateDir: values['state-dir'],
+            env: connectionEnv(connection),
+            artifact: {
+              path: values.out,
+              kind: 'full',
+              verifiedLevel: format === 'plain' ? 'V0' : null,
+            },
+          })
+          return reportPlanOutcome(plan, result, write)
         }
 
         const format = (values.format ?? 'custom') as LogicalFormat
@@ -596,7 +474,7 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
           writeError('bkagent: --jobs requires --format directory\n')
           return 2
         }
-        const ctx = planContext(instance, requestDigest(request))
+        const ctx = buildPlanContext(instance, requestDigest(request))
         const built = postgresEngine.planLogicalBackup(request, ctx)
         const prepared = await preparePlan({
           plan: built,
@@ -611,39 +489,29 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
               expiresAt: new Date(Date.parse(now) + 3_600_000).toISOString(),
             }
           },
-          validate: (candidate) => validate(candidate, principal),
+          validate: (candidate) => validateForExecution(candidate, principal),
           now: () => new Date().toISOString(),
           maxAttempts: 2,
         })
         if (!prepared.ok) {
-          write(`${issueText(prepared.issues)}\n`)
+          write(`${planIssueText(prepared.issues)}\n`)
           return 4
         }
         const plan = prepared.plan
-        const result = await applyPlan(
-          plan,
-          instance,
+        const { result } = await executePlan(plan, instance, {
           executor,
-          deps,
-          values['state-dir'],
-          connectionEnv(connection),
-        )
-        if (values.db !== undefined) {
-          await persistRun(resolveDb(values.db), {
-            plan,
-            principalId: principal,
-            result,
-            artifact: {
-              path: values.out,
-              kind: 'logical',
-              verifiedLevel: format === 'plain' ? null : 'V1',
-            },
-          })
-        }
-        write(
-          `${JSON.stringify({ planId: plan.planId, risk: plan.risk, steps: plan.steps.map((step) => step.stepId), result }, null, 2)}\n`,
-        )
-        return result.status === 'succeeded' ? 0 : 1
+          writeError,
+          controlDb: resolveDb(values.db),
+          principalId: principal,
+          stateDir: values['state-dir'],
+          env: connectionEnv(connection),
+          artifact: {
+            path: values.out,
+            kind: 'logical',
+            verifiedLevel: format === 'plain' ? null : 'V1',
+          },
+        })
+        return reportPlanOutcome(plan, result, write)
       }
 
       case 'restore': {
@@ -705,84 +573,87 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
           return 2
         }
         const instance = await postgresEngine.probe(executor, connection)
-        const ctx = planContext(instance, requestDigest(request))
+        const ctx = buildPlanContext(instance, requestDigest(request))
         const built = postgresEngine.planLogicalRestore(request, ctx)
-        const asset =
-          values.db === undefined
-            ? null
-            : await withRepo(resolveDb(values.db), async (repo) => repo.assets.get(built.targetId))
-        const effectiveRisk = escalateRisk(built.risk, asset)
-        const gatePlan = effectiveRisk === built.risk ? built : { ...built, risk: effectiveRisk }
-
-        if (requiresApproval(gatePlan.risk) && !values.yes) {
-          writeError(`bkagent: plan risk is ${gatePlan.risk}; re-run with --yes to proceed\n`)
-          return 2
+        const gate = await authorizeDestructivePlan({
+          plan: built,
+          instance,
+          controlDb: resolveDb(values.db),
+          confirmed: values.yes,
+          requester: principal,
+          osPrincipal: principalFor(undefined, env),
+        })
+        if (gate.kind === 'denied') {
+          writeError(`bkagent: ${gate.message}\n`)
+          return gate.exitCode
         }
-
-        if (requiredApprovals(gatePlan.risk) > 0) {
-          if (values.db === undefined) {
-            writeError(
-              'bkagent: production-destructive restore requires --db for four-eyes approvals\n',
-            )
-            return 2
-          }
-          const digest = requestDigest(request)
-          const since = new Date(Date.now() - 3_600_000).toISOString()
-          const approvals = await withRepo(resolveDb(values.db), async (repo) =>
-            repo.approvals.listFor(gatePlan.targetId, digest, since),
-          )
-          const status = fourEyesStatus(gatePlan.risk, approvals, new Date())
-          if (!status.ok) {
-            writeError(
-              `bkagent: production-destructive restore requires ${status.required} distinct approvals; have ${status.distinct}.\n` +
-                `digest: ${digest}\n` +
-                `approve: bkagent approve --db <path> --target ${gatePlan.targetId} --digest ${digest} --approver <id>\n`,
-            )
-            return 2
-          }
-        }
+        const gatePlan = gate.plan
+        const destructive = riskAtLeast(gatePlan.risk, 'destructive')
 
         const prepared = await preparePlan({
           plan: gatePlan,
           refresh: async () => {
             const live = await postgresEngine.probe(executor, connection)
+            // A destructive plan must never inherit an identity the live probe
+            // could not prove; that would authorize the wrong cluster.
+            if (destructive && provenIdentity(gatePlan, live) === null) {
+              throw new Error(identityDenialMessage(gatePlan, live))
+            }
             const now = new Date().toISOString()
             return {
               ...gatePlan.fingerprint,
-              systemIdentifier: live.systemIdentifier ?? gatePlan.fingerprint.systemIdentifier,
+              systemIdentifier: destructive
+                ? (live.systemIdentifier as string)
+                : (live.systemIdentifier ?? gatePlan.fingerprint.systemIdentifier),
               targetOid: live.databaseOid ?? gatePlan.fingerprint.targetOid,
               createdAt: now,
               expiresAt: new Date(Date.parse(now) + 3_600_000).toISOString(),
             }
           },
-          validate: (candidate) => validate(candidate, principal),
+          validate: (candidate) => validateForExecution(candidate, principal),
           now: () => new Date().toISOString(),
           maxAttempts: 2,
         })
         if (!prepared.ok) {
-          write(`${issueText(prepared.issues)}\n`)
+          write(`${planIssueText(prepared.issues)}\n`)
           return 4
         }
-        const plan = prepared.plan
-        const result = await applyPlan(
-          plan,
-          instance,
-          executor,
-          deps,
-          values['state-dir'],
-          connectionEnv(connection),
-        )
-        if (values.db !== undefined) {
-          await persistRun(resolveDb(values.db), {
+
+        // Re-authorize the plan that will actually run against a fresh probe,
+        // so approvals and identity apply to the final prepared revision.
+        let plan = prepared.plan
+        let executionInstance = instance
+        if (destructive) {
+          executionInstance = await postgresEngine.probe(executor, connection)
+          const finalGate = await authorizeDestructivePlan({
             plan,
-            principalId: principal,
-            result,
+            instance: executionInstance,
+            controlDb: resolveDb(values.db),
+            confirmed: values.yes,
+            requester: principal,
+            osPrincipal: principalFor(undefined, env),
           })
+          if (finalGate.kind === 'denied') {
+            writeError(`bkagent: ${finalGate.message}\n`)
+            return finalGate.exitCode
+          }
+          plan = finalGate.plan
         }
-        write(
-          `${JSON.stringify({ planId: plan.planId, risk: plan.risk, steps: plan.steps.map((step) => step.stepId), result }, null, 2)}\n`,
-        )
-        return result.status === 'succeeded' ? 0 : 1
+
+        const { result } = await executePlan(plan, executionInstance, {
+          executor,
+          writeError,
+          controlDb: resolveDb(values.db),
+          principalId: principal,
+          stateDir: values['state-dir'],
+          env: connectionEnv(connection),
+          authorization: {
+            confirmed: values.yes,
+            requester: principal,
+            osPrincipal: principalFor(undefined, env),
+          },
+        })
+        return reportPlanOutcome(plan, result, write)
       }
 
       case 'verify': {
@@ -846,6 +717,7 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
             yes: { type: 'boolean', default: false },
             principal: { type: 'string' },
             'state-dir': { type: 'string' },
+            db: { type: 'string' },
           },
         })
         const dsn = values.dsn ?? env.BKAGENT_DSN
@@ -908,32 +780,57 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
           ...(values['verify-sql'] === undefined ? {} : { verifySql: values['verify-sql'] }),
         }
 
-        const ctx = planContext(instance, requestDigest(request))
-        const plan = buildPitrRestorePlan(request, ctx)
-        if (!values.yes) {
-          writeError(`bkagent: plan risk is ${plan.risk}; re-run with --yes to proceed\n`)
-          return 2
+        const ctx = buildPlanContext(instance, requestDigest(request))
+        const built = buildPitrRestorePlan(request, ctx)
+        const principal = principalFor(values.principal, env)
+        const gate = await authorizeDestructivePlan({
+          plan: built,
+          instance,
+          controlDb: resolveDb(values.db),
+          confirmed: values.yes,
+          requester: principal,
+          osPrincipal: principalFor(undefined, env),
+        })
+        if (gate.kind === 'denied') {
+          writeError(`bkagent: ${gate.message}\n`)
+          return gate.exitCode
         }
-        const issues = validate(plan, principalFor(values.principal, env))
+        const live = await postgresEngine.probe(executor, connection)
+        const finalGate = await authorizeDestructivePlan({
+          plan: gate.plan,
+          instance: live,
+          controlDb: resolveDb(values.db),
+          confirmed: values.yes,
+          requester: principal,
+          osPrincipal: principalFor(undefined, env),
+        })
+        if (finalGate.kind === 'denied') {
+          writeError(`bkagent: ${finalGate.message}\n`)
+          return finalGate.exitCode
+        }
+        const plan = finalGate.plan
+        const issues = validateForExecution(plan, principal)
         if (issues.length > 0) {
-          write(`${issueText(issues)}\n`)
+          write(`${planIssueText(issues)}\n`)
           return 4
         }
         const pitrEnv = connectionEnv(
           withDatabase({ ...connection, host: '127.0.0.1', port: values.port }, 'postgres'),
         )
-        const result = await applyPlan(
-          plan,
-          instance,
+        const { result } = await executePlan(plan, live, {
           executor,
-          deps,
-          values['state-dir'],
-          pitrEnv,
-        )
-        write(
-          `${JSON.stringify({ planId: plan.planId, risk: plan.risk, steps: plan.steps.map((step) => step.stepId), result }, null, 2)}\n`,
-        )
-        return result.status === 'succeeded' ? 0 : 1
+          writeError,
+          controlDb: resolveDb(values.db),
+          principalId: principal,
+          stateDir: values['state-dir'],
+          env: pitrEnv,
+          authorization: {
+            confirmed: values.yes,
+            requester: principal,
+            osPrincipal: principalFor(undefined, env),
+          },
+        })
+        return reportPlanOutcome(plan, result, write)
       }
 
       case 'pgbackrest-backup': {
@@ -949,6 +846,7 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
             dsn: { type: 'string' },
             principal: { type: 'string' },
             'state-dir': { type: 'string' },
+            db: { type: 'string' },
           },
         })
         if (values.config === undefined || values.stanza === undefined) {
@@ -973,16 +871,19 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
           requestDigest(request),
         )
         const plan = buildPgBackRestBackupPlan(request, ctx)
-        const issues = validate(plan, principalFor(values.principal, env))
+        const issues = validateForExecution(plan, principalFor(values.principal, env))
         if (issues.length > 0) {
-          write(`${issueText(issues)}\n`)
+          write(`${planIssueText(issues)}\n`)
           return 4
         }
-        const result = await applyPlan(plan, ctx.instance, executor, deps, values['state-dir'])
-        write(
-          `${JSON.stringify({ planId: plan.planId, risk: plan.risk, steps: plan.steps.map((step) => step.stepId), result }, null, 2)}\n`,
-        )
-        return result.status === 'succeeded' ? 0 : 1
+        const { result } = await executePlan(plan, ctx.instance, {
+          executor,
+          writeError,
+          controlDb: resolveDb(values.db),
+          principalId: principalFor(values.principal, env),
+          stateDir: values['state-dir'],
+        })
+        return reportPlanOutcome(plan, result, write)
       }
 
       case 'pgbackrest-restore': {
@@ -1004,6 +905,7 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
             yes: { type: 'boolean', default: false },
             principal: { type: 'string' },
             'state-dir': { type: 'string' },
+            db: { type: 'string' },
           },
         })
         if (
@@ -1046,26 +948,54 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
           ...(values['start-port'] === undefined ? {} : { startPort: values['start-port'] }),
           ...(values.log === undefined ? {} : { logPath: values.log }),
         }
-        const ctx = await providerContext(
-          values.dsn ?? env.BKAGENT_DSN,
-          executor,
-          requestDigest(request),
-        )
+        const dsn = values.dsn ?? env.BKAGENT_DSN
+        const ctx = await providerContext(dsn, executor, requestDigest(request))
         const plan = buildPgBackRestRestorePlan(request, ctx)
-        if (!values.yes) {
-          writeError(`bkagent: plan risk is ${plan.risk}; re-run with --yes to proceed\n`)
-          return 2
+        const principal = principalFor(values.principal, env)
+        const gate = await authorizeDestructivePlan({
+          plan,
+          instance: ctx.instance,
+          controlDb: resolveDb(values.db),
+          confirmed: values.yes,
+          requester: principal,
+          osPrincipal: principalFor(undefined, env),
+        })
+        if (gate.kind === 'denied') {
+          writeError(`bkagent: ${gate.message}\n`)
+          return gate.exitCode
         }
-        const issues = validate(plan, principalFor(values.principal, env))
+        const live = await probeTarget(dsn, executor)
+        const finalGate = await authorizeDestructivePlan({
+          plan: gate.plan,
+          instance: live,
+          controlDb: resolveDb(values.db),
+          confirmed: values.yes,
+          requester: principal,
+          osPrincipal: principalFor(undefined, env),
+        })
+        if (finalGate.kind === 'denied') {
+          writeError(`bkagent: ${finalGate.message}\n`)
+          return finalGate.exitCode
+        }
+        const gatedPlan = finalGate.plan
+        const issues = validateForExecution(gatedPlan, principal)
         if (issues.length > 0) {
-          write(`${issueText(issues)}\n`)
+          write(`${planIssueText(issues)}\n`)
           return 4
         }
-        const result = await applyPlan(plan, ctx.instance, executor, deps, values['state-dir'])
-        write(
-          `${JSON.stringify({ planId: plan.planId, risk: plan.risk, steps: plan.steps.map((step) => step.stepId), result }, null, 2)}\n`,
-        )
-        return result.status === 'succeeded' ? 0 : 1
+        const { result } = await executePlan(gatedPlan, live, {
+          executor,
+          writeError,
+          controlDb: resolveDb(values.db),
+          principalId: principal,
+          stateDir: values['state-dir'],
+          authorization: {
+            confirmed: values.yes,
+            requester: principal,
+            osPrincipal: principalFor(undefined, env),
+          },
+        })
+        return reportPlanOutcome(gatedPlan, result, write)
       }
 
       case 'pgbackrest-expire': {
@@ -1080,6 +1010,7 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
             yes: { type: 'boolean', default: false },
             principal: { type: 'string' },
             'state-dir': { type: 'string' },
+            db: { type: 'string' },
           },
         })
         if (values.config === undefined || values.stanza === undefined) {
@@ -1091,26 +1022,54 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
           stanza: values.stanza,
           ...(values.repo === undefined ? {} : { repo: values.repo }),
         }
-        const ctx = await providerContext(
-          values.dsn ?? env.BKAGENT_DSN,
-          executor,
-          requestDigest(request),
-        )
+        const dsn = values.dsn ?? env.BKAGENT_DSN
+        const ctx = await providerContext(dsn, executor, requestDigest(request))
         const plan = buildPgBackRestExpirePlan(request, ctx)
-        if (!values.yes) {
-          writeError(`bkagent: plan risk is ${plan.risk}; re-run with --yes to proceed\n`)
-          return 2
+        const principal = principalFor(values.principal, env)
+        const gate = await authorizeDestructivePlan({
+          plan,
+          instance: ctx.instance,
+          controlDb: resolveDb(values.db),
+          confirmed: values.yes,
+          requester: principal,
+          osPrincipal: principalFor(undefined, env),
+        })
+        if (gate.kind === 'denied') {
+          writeError(`bkagent: ${gate.message}\n`)
+          return gate.exitCode
         }
-        const issues = validate(plan, principalFor(values.principal, env))
+        const live = await probeTarget(dsn, executor)
+        const finalGate = await authorizeDestructivePlan({
+          plan: gate.plan,
+          instance: live,
+          controlDb: resolveDb(values.db),
+          confirmed: values.yes,
+          requester: principal,
+          osPrincipal: principalFor(undefined, env),
+        })
+        if (finalGate.kind === 'denied') {
+          writeError(`bkagent: ${finalGate.message}\n`)
+          return finalGate.exitCode
+        }
+        const gatedPlan = finalGate.plan
+        const issues = validateForExecution(gatedPlan, principal)
         if (issues.length > 0) {
-          write(`${issueText(issues)}\n`)
+          write(`${planIssueText(issues)}\n`)
           return 4
         }
-        const result = await applyPlan(plan, ctx.instance, executor, deps, values['state-dir'])
-        write(
-          `${JSON.stringify({ planId: plan.planId, risk: plan.risk, steps: plan.steps.map((step) => step.stepId), result }, null, 2)}\n`,
-        )
-        return result.status === 'succeeded' ? 0 : 1
+        const { result } = await executePlan(gatedPlan, live, {
+          executor,
+          writeError,
+          controlDb: resolveDb(values.db),
+          principalId: principal,
+          stateDir: values['state-dir'],
+          authorization: {
+            confirmed: values.yes,
+            requester: principal,
+            osPrincipal: principalFor(undefined, env),
+          },
+        })
+        return reportPlanOutcome(gatedPlan, result, write)
       }
 
       case 'walg-backup': {
@@ -1123,6 +1082,7 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
             dsn: { type: 'string' },
             principal: { type: 'string' },
             'state-dir': { type: 'string' },
+            db: { type: 'string' },
           },
         })
         if (values['data-dir'] === undefined) {
@@ -1139,16 +1099,19 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
           requestDigest(request),
         )
         const plan = buildWalGBackupPlan(request, ctx)
-        const issues = validate(plan, principalFor(values.principal, env))
+        const issues = validateForExecution(plan, principalFor(values.principal, env))
         if (issues.length > 0) {
-          write(`${issueText(issues)}\n`)
+          write(`${planIssueText(issues)}\n`)
           return 4
         }
-        const result = await applyPlan(plan, ctx.instance, executor, deps, values['state-dir'])
-        write(
-          `${JSON.stringify({ planId: plan.planId, risk: plan.risk, steps: plan.steps.map((step) => step.stepId), result }, null, 2)}\n`,
-        )
-        return result.status === 'succeeded' ? 0 : 1
+        const { result } = await executePlan(plan, ctx.instance, {
+          executor,
+          writeError,
+          controlDb: resolveDb(values.db),
+          principalId: principalFor(values.principal, env),
+          stateDir: values['state-dir'],
+        })
+        return reportPlanOutcome(plan, result, write)
       }
 
       case 'walg-restore': {
@@ -1165,6 +1128,7 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
             yes: { type: 'boolean', default: false },
             principal: { type: 'string' },
             'state-dir': { type: 'string' },
+            db: { type: 'string' },
           },
         })
         if (values['data-dir'] === undefined) {
@@ -1178,26 +1142,54 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
           ...(values.log === undefined ? {} : { logPath: values.log }),
           ...(values.walg === undefined ? {} : { command: values.walg }),
         }
-        const ctx = await providerContext(
-          values.dsn ?? env.BKAGENT_DSN,
-          executor,
-          requestDigest(request),
-        )
+        const dsn = values.dsn ?? env.BKAGENT_DSN
+        const ctx = await providerContext(dsn, executor, requestDigest(request))
         const plan = buildWalGRestorePlan(request, ctx)
-        if (!values.yes) {
-          writeError(`bkagent: plan risk is ${plan.risk}; re-run with --yes to proceed\n`)
-          return 2
+        const principal = principalFor(values.principal, env)
+        const gate = await authorizeDestructivePlan({
+          plan,
+          instance: ctx.instance,
+          controlDb: resolveDb(values.db),
+          confirmed: values.yes,
+          requester: principal,
+          osPrincipal: principalFor(undefined, env),
+        })
+        if (gate.kind === 'denied') {
+          writeError(`bkagent: ${gate.message}\n`)
+          return gate.exitCode
         }
-        const issues = validate(plan, principalFor(values.principal, env))
+        const live = await probeTarget(dsn, executor)
+        const finalGate = await authorizeDestructivePlan({
+          plan: gate.plan,
+          instance: live,
+          controlDb: resolveDb(values.db),
+          confirmed: values.yes,
+          requester: principal,
+          osPrincipal: principalFor(undefined, env),
+        })
+        if (finalGate.kind === 'denied') {
+          writeError(`bkagent: ${finalGate.message}\n`)
+          return finalGate.exitCode
+        }
+        const gatedPlan = finalGate.plan
+        const issues = validateForExecution(gatedPlan, principal)
         if (issues.length > 0) {
-          write(`${issueText(issues)}\n`)
+          write(`${planIssueText(issues)}\n`)
           return 4
         }
-        const result = await applyPlan(plan, ctx.instance, executor, deps, values['state-dir'])
-        write(
-          `${JSON.stringify({ planId: plan.planId, risk: plan.risk, steps: plan.steps.map((step) => step.stepId), result }, null, 2)}\n`,
-        )
-        return result.status === 'succeeded' ? 0 : 1
+        const { result } = await executePlan(gatedPlan, live, {
+          executor,
+          writeError,
+          controlDb: resolveDb(values.db),
+          principalId: principal,
+          stateDir: values['state-dir'],
+          authorization: {
+            confirmed: values.yes,
+            requester: principal,
+            osPrincipal: principalFor(undefined, env),
+          },
+        })
+        return reportPlanOutcome(gatedPlan, result, write)
       }
 
       case 'walg-prune': {
@@ -1211,6 +1203,7 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
             yes: { type: 'boolean', default: false },
             principal: { type: 'string' },
             'state-dir': { type: 'string' },
+            db: { type: 'string' },
           },
         })
         if (values['retain-full'] === undefined) {
@@ -1221,26 +1214,54 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
           retainFull: parsePositiveInt(values['retain-full'], '--retain-full') as number,
           ...(values.walg === undefined ? {} : { command: values.walg }),
         }
-        const ctx = await providerContext(
-          values.dsn ?? env.BKAGENT_DSN,
-          executor,
-          requestDigest(request),
-        )
+        const dsn = values.dsn ?? env.BKAGENT_DSN
+        const ctx = await providerContext(dsn, executor, requestDigest(request))
         const plan = buildWalGPrunePlan(request, ctx)
-        if (!values.yes) {
-          writeError(`bkagent: plan risk is ${plan.risk}; re-run with --yes to proceed\n`)
-          return 2
+        const principal = principalFor(values.principal, env)
+        const gate = await authorizeDestructivePlan({
+          plan,
+          instance: ctx.instance,
+          controlDb: resolveDb(values.db),
+          confirmed: values.yes,
+          requester: principal,
+          osPrincipal: principalFor(undefined, env),
+        })
+        if (gate.kind === 'denied') {
+          writeError(`bkagent: ${gate.message}\n`)
+          return gate.exitCode
         }
-        const issues = validate(plan, principalFor(values.principal, env))
+        const live = await probeTarget(dsn, executor)
+        const finalGate = await authorizeDestructivePlan({
+          plan: gate.plan,
+          instance: live,
+          controlDb: resolveDb(values.db),
+          confirmed: values.yes,
+          requester: principal,
+          osPrincipal: principalFor(undefined, env),
+        })
+        if (finalGate.kind === 'denied') {
+          writeError(`bkagent: ${finalGate.message}\n`)
+          return finalGate.exitCode
+        }
+        const gatedPlan = finalGate.plan
+        const issues = validateForExecution(gatedPlan, principal)
         if (issues.length > 0) {
-          write(`${issueText(issues)}\n`)
+          write(`${planIssueText(issues)}\n`)
           return 4
         }
-        const result = await applyPlan(plan, ctx.instance, executor, deps, values['state-dir'])
-        write(
-          `${JSON.stringify({ planId: plan.planId, risk: plan.risk, steps: plan.steps.map((step) => step.stepId), result }, null, 2)}\n`,
-        )
-        return result.status === 'succeeded' ? 0 : 1
+        const { result } = await executePlan(gatedPlan, live, {
+          executor,
+          writeError,
+          controlDb: resolveDb(values.db),
+          principalId: principal,
+          stateDir: values['state-dir'],
+          authorization: {
+            confirmed: values.yes,
+            requester: principal,
+            osPrincipal: principalFor(undefined, env),
+          },
+        })
+        return reportPlanOutcome(gatedPlan, result, write)
       }
 
       case 'artifact-add': {
@@ -1310,6 +1331,7 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
             since: { type: 'string' },
             limit: { type: 'string' },
             format: { type: 'string', default: 'json' },
+            history: { type: 'boolean', default: false },
           },
         })
         const artifacts = await withRepo(resolveDb(values.db), async (repo) =>
@@ -1318,15 +1340,21 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
             ...(values.provider === undefined ? {} : { provider: values.provider }),
             ...(values.since === undefined ? {} : { since: parseSince(values.since, 3650) }),
             ...(values.limit === undefined ? {} : { limit: Number(values.limit) }),
+            // Default is live-only. `--history` also returns tombstoned rows
+            // (and, when given, the other filters still apply).
+            lifecycle: values.history ? 'any' : 'live',
           }),
         )
         if (values.format === 'text') {
           write(
             `${artifacts
-              .map(
-                (artifact) =>
-                  `${artifact.createdAt} ${artifact.provider}/${artifact.kind} ${artifact.targetId} ${artifact.sizeBytes} ${artifact.path}`,
-              )
+              .map((artifact) => {
+                const lifecycle =
+                  artifact.lifecycleState === 'tombstoned'
+                    ? `[tombstoned${artifact.tombstonedAt === null || artifact.tombstonedAt === undefined ? '' : ` ${artifact.tombstonedAt}`}]`
+                    : '[live]'
+                return `${artifact.createdAt} ${artifact.provider}/${artifact.kind} ${artifact.targetId} ${artifact.sizeBytes} ${artifact.path} ${lifecycle}`
+              })
               .join('\n')}\n`,
           )
         } else {
@@ -1345,7 +1373,10 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
             weekly: { type: 'string' },
             monthly: { type: 'string' },
             target: { type: 'string' },
+            digest: { type: 'string' },
+            principal: { type: 'string' },
             apply: { type: 'boolean', default: false },
+            yes: { type: 'boolean', default: false },
           },
         })
         if (values.daily === undefined || values.weekly === undefined || values.monthly === undefined) {
@@ -1357,31 +1388,184 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
           weekly: parseNonNegativeInt(values.weekly, '--weekly'),
           monthly: parseNonNegativeInt(values.monthly, '--monthly'),
         }
-        const result = await withRepo(resolveDb(values.db), async (repo) => {
-          const artifacts = await repo.artifacts.list(
-            values.target === undefined ? {} : { targetId: asTargetId(values.target) },
-          )
-          const decision = planRetention(
-            artifacts.map((artifact) => ({
-              id: artifact.id,
-              parentId: artifact.parentId,
-              createdAt: artifact.createdAt,
-              kind: artifact.kind,
-              protected: artifact.protected,
-            })),
-            policy,
-            new Date(),
-          )
-          if (values.apply) {
-            await repo.artifacts.remove([...decision.remove].map((id) => asArtifactId(id)))
+        if (values.apply) {
+          if (values.target === undefined) {
+            writeError('bkagent: retain --apply requires exactly one --target\n')
+            return 2
           }
+          if (!values.yes) {
+            writeError(
+              'bkagent: retain --apply changes catalog lifecycle state and requires --yes\n',
+            )
+            return 2
+          }
+          if (values.digest === undefined) {
+            writeError(
+              'bkagent: retain --apply requires --digest <digest> from the reviewed dry run\n',
+            )
+            return 2
+          }
+        }
+
+        const controlDb = resolveDb(values.db)
+        const targetId = values.target === undefined ? null : asTargetId(values.target)
+        const now = new Date()
+
+        if (values.apply && targetId !== null && values.digest !== undefined) {
+          // `--target` and `--digest` are proven above.
+          const appliedDigest = values.digest
+          const outcome = await withRepo(controlDb, (repo) =>
+            tombstoneRetention(repo, {
+              targetId,
+              policy,
+              expectedDigest: appliedDigest,
+              confirmed: values.yes,
+              requester: principalFor(values.principal, env),
+              osPrincipal: principalFor(undefined, env),
+              now,
+            }),
+          )
+          if (outcome.kind === 'refused') {
+            writeError(
+              `bkagent: retention apply refused (${outcome.reason}): ${outcome.message}\n`,
+            )
+            return 2
+          }
+          const summary = outcome.summary
+          write(
+            `${JSON.stringify(
+              {
+                applied: true,
+                tombstoneOnly: true,
+                bytesReclaimed: 0,
+                bytesNotReclaimed: summary.bytesNotReclaimed,
+                targetId: summary.targetId,
+                digest: summary.digest,
+                policy: summary.policy,
+                tombstoned: summary.artifactIds,
+                providerClasses: summary.providerClasses,
+                approvals: summary.approvals,
+                outboxId: summary.outboxId,
+                notice:
+                  'Catalog rows tombstoned; bytes were NOT reclaimed. Rows, paths, checksums and ' +
+                  'lineage are retained for trace and audit. Provider-owned repositories are pruned ' +
+                  'only with their own tool (pgbackrest expire / wal-g delete retain).',
+              },
+              null,
+              2,
+            )}\n`,
+          )
+          return 0
+        }
+
+        const { artifacts, protectedTargets } = await withRepo(controlDb, async (repo) => {
+          const assets = await repo.assets.list()
           return {
-            applied: values.apply,
-            keep: [...decision.keep],
-            remove: [...decision.remove],
-            reasons: Object.fromEntries(decision.reasons),
+            artifacts: await repo.artifacts.list(targetId === null ? {} : { targetId }),
+            // Target-level protection: `asset-set --protected` claims every
+            // artifact of the target, regardless of row-level flags.
+            protectedTargets: new Set(
+              assets.filter((asset) => asset.protected).map((asset) => asset.targetId as string),
+            ),
           }
         })
+        const decision = planRetention(artifacts.map(toRetentionArtifact), policy, now, {
+          protectedTargets,
+        })
+
+        const byTarget = new Map<string, ArtifactRecord[]>()
+        for (const artifact of artifacts) {
+          const group = byTarget.get(artifact.targetId)
+          if (group === undefined) byTarget.set(artifact.targetId, [artifact])
+          else group.push(artifact)
+        }
+        // A dry run for an empty target still yields the digest of the empty
+        // candidate set, so the operator can see the exact decision they hold.
+        if (targetId !== null && !byTarget.has(targetId)) byTarget.set(targetId, [])
+
+        const targetReports = [...byTarget.entries()]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([entryTargetId, records]) => {
+            const ids = new Set(records.map((record) => record.id as string))
+            const remove = [...decision.remove].filter((id) => ids.has(id)).sort()
+            const keep = [...decision.keep].filter((id) => ids.has(id)).sort()
+            const digest = retentionDigest({
+              targetId: entryTargetId,
+              policy,
+              candidateIds: remove,
+            })
+            const providerClasses: Record<string, number> = {
+              managed: 0,
+              'provider-owned': 0,
+              unknown: 0,
+            }
+            const providerOwned: Array<{ id: string; provider: string; guidance: string }> = []
+            const unknownProviders: Array<{ id: string; provider: string; guidance: string }> = []
+            let bytesNotReclaimed = 0
+            for (const id of remove) {
+              const record = records.find((candidate) => (candidate.id as string) === id)
+              if (record === undefined) continue
+              const providerClass = classifyRetentionProvider(record.provider)
+              providerClasses[providerClass] = (providerClasses[providerClass] ?? 0) + 1
+              bytesNotReclaimed += record.sizeBytes
+              if (providerClass === 'provider-owned') {
+                providerOwned.push({
+                  id,
+                  provider: record.provider,
+                  guidance: providerRetentionGuidance(record.provider),
+                })
+              } else if (providerClass === 'unknown') {
+                unknownProviders.push({
+                  id,
+                  provider: record.provider,
+                  guidance: providerRetentionGuidance(record.provider),
+                })
+              }
+            }
+            return {
+              targetId: entryTargetId,
+              digest,
+              assetProtected: protectedTargets.has(entryTargetId),
+              keep,
+              remove,
+              reasons: Object.fromEntries(
+                [...decision.reasons].filter(([id]) => ids.has(id)),
+              ),
+              providerClasses,
+              providerOwned,
+              unknownProviders,
+              bytesNotReclaimed,
+            }
+          })
+
+        const selected =
+          targetId === null
+            ? null
+            : (targetReports.find((report) => report.targetId === targetId) ?? null)
+        const result = {
+          applied: false,
+          tombstoneOnly: true,
+          bytesReclaimed: 0,
+          policy,
+          targetId,
+          digest: selected === null ? null : selected.digest,
+          keep: selected === null
+            ? [...decision.keep]
+            : selected.keep,
+          remove: selected === null
+            ? [...decision.remove]
+            : selected.remove,
+          reasons: selected === null
+            ? Object.fromEntries(decision.reasons)
+            : selected.reasons,
+          targets: targetReports,
+          notice:
+            'Dry run: no rows changed. --apply only tombstones eligible catalog rows; bytes are ' +
+            'NOT reclaimed. A removal set containing provider-owned (pgbackrest, walg) or unknown ' +
+            'providers refuses the entire apply with provider guidance. Assets registered with ' +
+            '--protected keep every artifact and apply refuses. --apply requires ' +
+            '--target, --yes and the --digest shown here.',
+        }
         write(`${JSON.stringify(result, null, 2)}\n`)
         return 0
       }
@@ -1489,6 +1673,31 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
         return 0
       }
 
+      case 'outbox-dispatch': {
+        const { values } = parseArgs({
+          args: [...rest],
+          allowPositionals: false,
+          options: {
+            db: { type: 'string' },
+            limit: { type: 'string' },
+            'max-attempts': { type: 'string' },
+          },
+        })
+        const limit = parsePositiveInt(values.limit, '--limit')
+        const maxAttempts = parsePositiveInt(values['max-attempts'], '--max-attempts')
+        const handlers = createOutboxHandlers({ webhookUrl: env.BKAGENT_WEBHOOK_URL })
+        const report = await withRepo(resolveDb(values.db), async (repo) =>
+          dispatchOutbox(repo, {
+            handlers,
+            now: () => new Date().toISOString(),
+            ...(limit === undefined ? {} : { limit }),
+            ...(maxAttempts === undefined ? {} : { maxAttempts }),
+          }),
+        )
+        write(`${JSON.stringify(report, null, 2)}\n`)
+        return 0
+      }
+
       case 'trace': {
         const { values } = parseArgs({
           args: [...rest],
@@ -1512,7 +1721,8 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
             const attempts = (await repo.attempts.listSince(epoch)).filter((attempt) =>
               planIds.has(attempt.planId),
             )
-            const artifacts = (await repo.artifacts.list({})).filter(
+            // History read: tombstoned artifacts still resolve their lineage.
+            const artifacts = (await repo.artifacts.list({ lifecycle: 'any' })).filter(
               (artifact) => artifact.planId !== null && planIds.has(artifact.planId),
             )
             return {
@@ -1528,7 +1738,8 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
           const attempts = (await repo.attempts.listSince(epoch)).filter(
             (attempt) => attempt.planId === planId,
           )
-          const artifacts = (await repo.artifacts.list({})).filter(
+          // History read: tombstoned artifacts still resolve their lineage.
+          const artifacts = (await repo.artifacts.list({ lifecycle: 'any' })).filter(
             (artifact) => artifact.planId === planId,
           )
           return {

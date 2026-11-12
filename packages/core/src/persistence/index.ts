@@ -1,3 +1,5 @@
 export * from './reconcile'
+export * from './run-lifecycle'
+export * from './outbox-dispatch'
 export * from './sqlite/mutex'
 export * from './sqlite/sqlite-repository'

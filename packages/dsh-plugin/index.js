@@ -152,6 +152,19 @@ export async function requireApproval(ctx, exec, toolName, reason) {
   }
 }
 
+/** Every logical restore input may contain destructive SQL, regardless of flags. */
+export function createRestoreToolHandler(ctx, restore) {
+  return async (args, exec) => {
+    await requireApproval(
+      ctx,
+      exec,
+      'pg_restore',
+      '所有逻辑恢复输入都可能包含 DROP 等破坏性 SQL',
+    )
+    return restore(args)
+  }
+}
+
 function textTool(toolName, description, parameters, execute) {
   return defineTool({
     name: toolName,
@@ -202,7 +215,7 @@ export function apply(ctx) {
   ctx.tools.register(
     textTool(
       'pg_restore',
-      '恢复逻辑备份到目标数据库。建库或 --clean 属于破坏性操作，须经审批。',
+      '恢复逻辑备份到目标数据库。所有恢复输入都可能包含破坏性 SQL，执行前须经审批。',
       {
         dsn: { type: 'string', required: true, description: 'postgres:// URI' },
         input: { type: 'string', required: true, description: '备份路径' },
@@ -213,17 +226,7 @@ export function apply(ctx) {
         noOwner: { type: 'boolean', description: '不恢复属主' },
         db: { type: 'string', description: '控制库路径' },
       },
-      async (args, exec) => {
-        if (args.clean === true || args.createDatabase === true) {
-          await requireApproval(
-            ctx,
-            exec,
-            'pg_restore',
-            '恢复计划包含建库或清理，属于破坏性操作',
-          )
-        }
-        return handlers.restore(args)
-      },
+      createRestoreToolHandler(ctx, handlers.restore),
     ),
   )
 

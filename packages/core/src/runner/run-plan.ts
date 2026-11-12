@@ -9,7 +9,12 @@ import { evaluateAll, type CustomPredicate } from './predicate'
 
 export interface StepOutcome {
   stepId: string
-  status: 'succeeded' | 'failed' | 'skipped'
+  /**
+   * `lease-lost` marks a step the runner refused to continue because it could
+   * no longer prove it still holds execution authority. It is not a command
+   * failure and carries no `errorClass`.
+   */
+  status: 'succeeded' | 'failed' | 'skipped' | 'lease-lost'
   attempts: number
   exitCode: number | null
   errorClass?: ErrorClass
@@ -19,14 +24,37 @@ export interface StepOutcome {
   durationMs: number
 }
 
+/** Where the lease was found lost relative to command dispatch. */
+export type LeaseLostPhase = 'before-step' | 'before-retry' | 'after-step'
+
+export interface LeaseLost {
+  /** Step being dispatched, or the step whose command just returned. */
+  stepId?: string
+  phase: LeaseLostPhase
+  message: string
+}
+
 export interface RunPlanResult {
   planId: string
-  status: 'succeeded' | 'failed'
+  /**
+   * `lease-lost` is an explicit non-success outcome: the runner stopped because
+   * execution authority could not be confirmed, not because a command failed.
+   */
+  status: 'succeeded' | 'failed' | 'lease-lost'
   steps: StepOutcome[]
   failedStep?: string
   errorClass?: ErrorClass
   error?: string
+  /** Present only when `status` is `lease-lost`. */
+  leaseLost?: LeaseLost
 }
+
+/**
+ * Async lease probe supplied by the caller. Returning `false` (or throwing)
+ * means the runner must stop dispatching work; the caller owns heartbeats and
+ * must abort `RunPlanOptions.signal` to kill an in-flight command.
+ */
+export type LeaseGuard = () => boolean | Promise<boolean>
 
 export interface StepEvent {
   type: 'start' | 'finish'
@@ -45,6 +73,10 @@ export interface RunPlanOptions {
   sleep?: (ms: number) => Promise<void>
   onStep?: (event: StepEvent) => void
   now?: () => string
+  /** Checked before each step and after each executor call. */
+  leaseGuard?: LeaseGuard
+  /** Forwarded to `Executor.run` so a lost lease can abort a running command. */
+  signal?: AbortSignal
 }
 
 interface CheckpointState {
@@ -151,10 +183,69 @@ function failure(
   }
 }
 
+interface LeaseCheck {
+  held: boolean
+  message: string
+}
+
+/** Fail-closed probe: a throwing guard is treated as a lost lease. */
+async function checkLease(guard: LeaseGuard | undefined): Promise<LeaseCheck> {
+  if (!guard) return { held: true, message: '' }
+  try {
+    const held = await guard()
+    return { held, message: held ? '' : 'lease guard reported the lease as lost' }
+  } catch (error) {
+    return { held: false, message: `lease guard failed: ${(error as Error).message}` }
+  }
+}
+
+function leaseLostStep(
+  step: Step,
+  message: string,
+  attempts: number,
+  exitCode: number | null = null,
+  stdout = '',
+  stderr = '',
+  durationMs = 0,
+): StepOutcome {
+  return {
+    stepId: step.stepId,
+    status: 'lease-lost',
+    attempts,
+    exitCode,
+    message,
+    stdout,
+    stderr,
+    durationMs,
+  }
+}
+
+function leaseLostResult(
+  plan: Plan,
+  outcomes: StepOutcome[],
+  leaseLost: LeaseLost,
+): RunPlanResult {
+  return {
+    planId: plan.planId,
+    status: 'lease-lost',
+    steps: outcomes,
+    error: leaseLost.message,
+    leaseLost,
+  }
+}
+
 /**
  * Executes a validated Plan step by step. Preconditions are re-evaluated at
  * execution time; transient failures are retried with the step's policy and
  * successful steps are checkpointed when a state directory is configured.
+ *
+ * Lease loss is terminal and is reported as `lease-lost`, never as an ordinary
+ * failed attempt: the runner has no authority to retry, checkpoint, or keep
+ * dispatching once `leaseGuard` rejects. The guard is re-checked at every point
+ * where async work could outlive the lease — before a step, after precondition
+ * evaluation, after each executor call, after postcondition evaluation (also for
+ * write-file steps), and after retry backoff before re-dispatch. A lost lease
+ * must abort `signal` so an in-flight command is killed.
  */
 export async function runPlan(plan: Plan, options: RunPlanOptions): Promise<RunPlanResult> {
   const sleep = options.sleep ?? defaultSleep
@@ -187,9 +278,32 @@ export async function runPlan(plan: Plan, options: RunPlanOptions): Promise<RunP
       continue
     }
 
-    options.onStep?.({ type: 'start', stepId: step.stepId })
+    const beforeStep = await checkLease(options.leaseGuard)
+    if (!beforeStep.held) {
+      return leaseLostResult(plan, outcomes, {
+        stepId: step.stepId,
+        phase: 'before-step',
+        message: beforeStep.message,
+      })
+    }
 
+    options.onStep?.({ type: 'start', stepId: step.stepId })
     const preconditionsHold = await evaluateAll(step.preconditions, predicateContext)
+
+    // Precondition evaluation may be slow (command probes, remote checks); the
+    // lease could have expired while it ran. Nothing has been dispatched yet.
+    const afterPreconditions = await checkLease(options.leaseGuard)
+    if (!afterPreconditions.held) {
+      const lost = leaseLostStep(step, afterPreconditions.message, 0)
+      outcomes.push(lost)
+      options.onStep?.({ type: 'finish', stepId: step.stepId, outcome: lost })
+      return leaseLostResult(plan, outcomes, {
+        stepId: step.stepId,
+        phase: 'before-step',
+        message: afterPreconditions.message,
+      })
+    }
+
     if (!preconditionsHold) {
       const outcome = failure(step, 'permanent', 'precondition failed')
       outcomes.push(outcome)
@@ -212,6 +326,19 @@ export async function runPlan(plan: Plan, options: RunPlanOptions): Promise<RunP
         writeFileSync(step.file.path, step.file.content, 'utf8')
         if (step.file.mode !== undefined) chmodSync(step.file.path, step.file.mode)
         const postconditionsHold = await evaluateAll(step.postconditions, predicateContext)
+        // The file is already on disk; without a lease the step must not be
+        // checkpointed as completed, so surface the loss instead of success.
+        const afterWrite = await checkLease(options.leaseGuard)
+        if (!afterWrite.held) {
+          const lost = leaseLostStep(step, afterWrite.message, 1, 0)
+          outcomes.push(lost)
+          options.onStep?.({ type: 'finish', stepId: step.stepId, outcome: lost })
+          return leaseLostResult(plan, outcomes, {
+            stepId: step.stepId,
+            phase: 'after-step',
+            message: afterWrite.message,
+          })
+        }
         outcome = postconditionsHold
           ? {
               stepId: step.stepId,
@@ -262,10 +389,56 @@ export async function runPlan(plan: Plan, options: RunPlanOptions): Promise<RunP
         cwd: options.cwd,
         env: options.env,
         timeoutMs: step.timeoutMs,
+        signal: options.signal,
       })
+
+      // Re-check after the call: a lease lost mid-command must not be retried,
+      // classified, or checkpointed, even when the command itself succeeded.
+      const afterStep = await checkLease(options.leaseGuard)
+      if (!afterStep.held) {
+        const lost = leaseLostStep(
+          step,
+          afterStep.message,
+          attempt,
+          result.exitCode,
+          result.stdout,
+          result.stderr,
+          result.durationMs,
+        )
+        outcomes.push(lost)
+        options.onStep?.({ type: 'finish', stepId: step.stepId, outcome: lost })
+        return leaseLostResult(plan, outcomes, {
+          stepId: step.stepId,
+          phase: 'after-step',
+          message: afterStep.message,
+        })
+      }
 
       if (result.exitCode === 0 && !result.timedOut) {
         const postconditionsHold = await evaluateAll(step.postconditions, predicateContext)
+
+        // Postconditions may themselves run commands. Success is only terminal
+        // once the lease still holds; otherwise the step must not be checkpointed.
+        const afterPostconditions = await checkLease(options.leaseGuard)
+        if (!afterPostconditions.held) {
+          const lost = leaseLostStep(
+            step,
+            afterPostconditions.message,
+            attempt,
+            result.exitCode,
+            result.stdout,
+            result.stderr,
+            result.durationMs,
+          )
+          outcomes.push(lost)
+          options.onStep?.({ type: 'finish', stepId: step.stepId, outcome: lost })
+          return leaseLostResult(plan, outcomes, {
+            stepId: step.stepId,
+            phase: 'after-step',
+            message: afterPostconditions.message,
+          })
+        }
+
         if (postconditionsHold) {
           outcome = {
             stepId: step.stepId,
@@ -292,7 +465,10 @@ export async function runPlan(plan: Plan, options: RunPlanOptions): Promise<RunP
       }
 
       const errorClass = classifyRunResult(result)
-      const retryable = step.retry.retryOn.includes(errorClass)
+      // An aborted run means the caller revoked execution (e.g. lease lost);
+      // retrying would re-dispatch work nobody is authorised to run.
+      const aborted = options.signal?.aborted === true
+      const retryable = !aborted && step.retry.retryOn.includes(errorClass)
       if (!retryable || attempt === step.retry.maxAttempts) {
         outcome = failure(
           step,
@@ -307,6 +483,27 @@ export async function runPlan(plan: Plan, options: RunPlanOptions): Promise<RunP
         break
       }
       await sleep(backoffDelay(step.retry, attempt))
+
+      // Backoff can outlast the lease; re-verify before re-dispatching.
+      const beforeRetry = await checkLease(options.leaseGuard)
+      if (!beforeRetry.held) {
+        const lost = leaseLostStep(
+          step,
+          beforeRetry.message,
+          attempt,
+          result.exitCode,
+          result.stdout,
+          result.stderr,
+          result.durationMs,
+        )
+        outcomes.push(lost)
+        options.onStep?.({ type: 'finish', stepId: step.stepId, outcome: lost })
+        return leaseLostResult(plan, outcomes, {
+          stepId: step.stepId,
+          phase: 'before-retry',
+          message: beforeRetry.message,
+        })
+      }
     }
 
     if (!outcome) {

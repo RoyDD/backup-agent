@@ -32,21 +32,74 @@ crontab.
 
 ## Retention
 
-Run `bkagent retain` from a daily job after the backup:
+`bkagent retain` is a two-phase operation: a dry run you review, then an apply
+bound to that exact decision.
 
 ```sh
-bkagent retain --db /var/lib/backup-agent/control.db --daily 7 --weekly 4 --monthly 12 --apply
+# 1. Review. Prints per-target GFS roots, the latest verified restore point kept
+#    per target, provider ownership of every candidate, and a decision digest.
+bkagent retain --db /var/lib/backup-agent/control.db --daily 7 --weekly 4 --monthly 12 \
+  --target 127.0.0.1:5432/app
+
+# 2. Apply exactly the reviewed decision.
+bkagent retain --db /var/lib/backup-agent/control.db --daily 7 --weekly 4 --monthly 12 \
+  --target 127.0.0.1:5432/app --apply --yes --digest <digest-from-step-1>
 ```
 
-Retention is reachability-aware: an incremental/differential chain is never
-broken. Provider-owned repositories (pgBackRest, WAL-G) are pruned by
-`pgbackrest expire` / `wal-g delete retain`, not by deleting files.
+Without `--target` the dry run still evaluates retention **per target**: one
+target's daily root never keeps another target's artifact alive. Each target
+keeps the latest V2/V3 verified restore point and its ancestors, so retention
+cannot remove the only evidence that a restore was verified.
+
+Assets registered with `--protected` are a target-level promise: the dry run
+keeps every artifact of that target with reason `asset-protected`, and
+`retain --apply` refuses any tombstone for it — even if it is handed a stale
+digest. Clear the protection deliberately (re-register the asset without
+`--protected`) before retiring those artifacts.
+
+`retain --apply` requirements (all fail closed, no partial mutation):
+
+- exactly one `--target`, `--yes`, and the `--digest` printed by the dry run;
+- a registered asset for that target (`bkagent asset-set`); the apply refuses a
+  protected asset; production assets also need two distinct current approvals
+  bound to the digest and excluding the requester and OS principal:
+  `bkagent approve --db ... --target 127.0.0.1:5432/app --digest <digest> --approver <id>`;
+- the whole removal set must be managed by this agent. `pgbackrest` and `walg`
+  are provider-owned; `native-logical` and `native-physical` are managed;
+  anything else is unknown. A single provider-owned or unknown candidate
+  refuses the entire apply and names the provider command instead;
+- the live candidate set must still digest to the reviewed value, otherwise the
+  apply is refused and the new digest is reported.
+
+**What `--apply` does:** it tombstones eligible catalog rows
+(`lifecycle_state = 'tombstoned'`, `tombstoned_at`) in one transaction together
+with one retained audit outbox event. **It does not reclaim bytes.** There is no
+`rm`, no file deletion and no provider invocation. Tombstoned rows keep their
+path, checksum and lineage: they disappear from the normal `catalog`, RPO,
+`metrics` and `capacity` views. Plan-linked artifacts remain available through
+`bkagent trace`; plan-less artifact history remains in the control database.
+
+`bkagent catalog` is live-only by default. `bkagent catalog --history` includes
+live and tombstoned rows, and its text output marks lifecycle explicitly
+(`[live]` / `[tombstoned <timestamp>]`; JSON carries `lifecycleState`). Use it
+for plan-less tombstones, which have no plan/ticket root for `bkagent trace`.
+
+Provider-owned repositories are pruned by their own tool, never by retention:
+`pgbackrest expire` (`bkagent pgbackrest-expire`) and
+`wal-g delete retain` (`bkagent walg-prune`). Managed artifacts are catalogued
+by this agent, but physical reclamation is still unimplemented: the plan-v1.1
+§7 physical-delete phase depends on a `StoragePort` that does not exist yet.
 
 ## Monitoring
 
 - `bkagent metrics --db ...` exposes Prometheus text.
 - `bkagent report --db ... --since 7d` renders Markdown or JSON.
-- `bkagent watchdog --db ...` reconciles expired leases and reports stalled attempts.
+- `bkagent outbox-dispatch --db ... --limit 50 --max-attempts 5` delivers transactional
+  outbox events at least once; run it from cron independently of backup jobs. Failure
+  notifications use `BKAGENT_WEBHOOK_URL` from the environment file, and receivers must
+  deduplicate on `outbox_id` (exactly-once delivery is not promised).
+- `bkagent watchdog --db ...` reconciles running attempts against live leases and reports
+  outbox pending/expired/dead-letter state.
 - `bkagent notify-test --url https://...` verifies webhook delivery.
 
 Recommended alerts:

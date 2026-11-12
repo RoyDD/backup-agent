@@ -14,6 +14,7 @@ describe('planRetention', () => {
     for (let day = 0; day < 10; day += 1) {
       artifacts.push({
         id: `full-${day}`,
+        targetId: 'pg-prod',
         parentId: null,
         createdAt: new Date(Date.UTC(2026, 0, 1 + day)).toISOString(),
         kind: 'full',
@@ -29,8 +30,20 @@ describe('planRetention', () => {
 
   it('never breaks an incremental chain', () => {
     const artifacts: RetentionArtifact[] = [
-      { id: 'full', parentId: null, createdAt: '2026-01-01T00:00:00.000Z', kind: 'full' },
-      { id: 'incr', parentId: 'full', createdAt: '2026-01-31T00:00:00.000Z', kind: 'incr' },
+      {
+        id: 'full',
+        targetId: 'pg-prod',
+        parentId: null,
+        createdAt: '2026-01-01T00:00:00.000Z',
+        kind: 'full',
+      },
+      {
+        id: 'incr',
+        targetId: 'pg-prod',
+        parentId: 'full',
+        createdAt: '2026-01-31T00:00:00.000Z',
+        kind: 'incr',
+      },
     ]
     const decision = planRetention(artifacts, { daily: 1, weekly: 0, monthly: 0 }, now)
     expect(decision.keep).toEqual(new Set(['incr', 'full']))
@@ -39,8 +52,21 @@ describe('planRetention', () => {
 
   it('always keeps protected artifacts', () => {
     const artifacts: RetentionArtifact[] = [
-      { id: 'old', parentId: null, createdAt: '2025-01-01T00:00:00.000Z', kind: 'full', protected: true },
-      { id: 'new', parentId: null, createdAt: '2026-01-31T00:00:00.000Z', kind: 'full' },
+      {
+        id: 'old',
+        targetId: 'pg-prod',
+        parentId: null,
+        createdAt: '2025-01-01T00:00:00.000Z',
+        kind: 'full',
+        protected: true,
+      },
+      {
+        id: 'new',
+        targetId: 'pg-prod',
+        parentId: null,
+        createdAt: '2026-01-31T00:00:00.000Z',
+        kind: 'full',
+      },
     ]
     const decision = planRetention(artifacts, { daily: 1, weekly: 0, monthly: 0 }, now)
     expect(decision.keep.has('old')).toBe(true)

@@ -203,8 +203,6 @@ export function buildLogicalRestorePlan(
     idempotencyKey: `logical-restore:${ctx.configDigest}`,
   })
 
-  const destructive = request.clean === true || request.createDatabase === true
-
   return {
     planId: asPlanId(newId('pln')),
     ticketId: ctx.ticketId,
@@ -215,6 +213,9 @@ export function buildLogicalRestorePlan(
     fingerprint: fingerprintFor(request.connection, ctx),
     steps,
     resources: { estimatedBytes: 0, estimatedDurationMs: 0, concurrencySlots: 1 },
-    risk: destructive ? 'destructive' : 'reversible',
+    // Every restore writes into a database and can execute destructive SQL
+    // from its input (e.g. pg_dump --clean or pg_dumpall). CLI flags alone do
+    // not prove that the input is non-destructive or that the target is empty.
+    risk: 'destructive',
   }
 }

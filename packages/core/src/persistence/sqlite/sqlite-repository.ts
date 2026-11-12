@@ -9,6 +9,7 @@ import type {
   ArtifactFilter,
   ArtifactRecord,
   ArtifactStore,
+  ArtifactTombstoneResult,
   ApprovalRecord,
   ApprovalStore,
   AssetStore,
@@ -78,6 +79,7 @@ interface AttemptRow {
   finished_at: string | null
   exit_code: number | null
   error_class: string | null
+  target_id: string | null
 }
 
 interface OutboxRow {
@@ -92,6 +94,7 @@ interface OutboxRow {
   created_at: string
   dispatched_at: string | null
   last_error: string | null
+  delivery_token: number
 }
 
 interface LeaseRow {
@@ -150,6 +153,8 @@ interface ArtifactRow {
   verified_at: string | null
   protected: number
   created_at: string
+  lifecycle_state: string
+  tombstoned_at: string | null
 }
 
 interface LineageRow {
@@ -219,6 +224,7 @@ function mapAttempt(row: AttemptRow): AttemptRecord {
     finishedAt: row.finished_at,
     exitCode: row.exit_code,
     errorClass: row.error_class,
+    targetId: row.target_id === null ? null : (row.target_id as TargetId),
   }
 }
 
@@ -234,6 +240,8 @@ function mapOutbox(row: OutboxRow): OutboxRecord {
     leaseExpiresAt: row.lease_expires_at,
     createdAt: row.created_at,
     dispatchedAt: row.dispatched_at,
+    lastError: row.last_error,
+    deliveryToken: row.delivery_token,
   }
 }
 
@@ -294,6 +302,8 @@ function mapArtifact(row: ArtifactRow): ArtifactRecord {
     verifiedAt: row.verified_at,
     protected: row.protected === 1,
     createdAt: row.created_at,
+    lifecycleState: row.lifecycle_state === 'tombstoned' ? 'tombstoned' : 'live',
+    tombstonedAt: row.tombstoned_at,
   }
 }
 
@@ -326,6 +336,29 @@ function withSavepoint<T>(db: DatabaseSync, name: string, fn: () => T): T {
   } catch (error) {
     db.exec(`ROLLBACK TO ${name}`)
     db.exec(`RELEASE ${name}`)
+    throw error
+  }
+}
+
+/**
+ * Runs `fn` under the control database's write lock. Inside an existing
+ * transaction (the `Repository.transaction()` view) it only nests a savepoint;
+ * standalone it opens `BEGIN IMMEDIATE` so read-then-write sequences such as
+ * claim/fence-bump are atomic across SQLite handles.
+ */
+function withWriteLock<T>(db: DatabaseSync, name: string, fn: () => T): T {
+  if (db.isTransaction) return withSavepoint(db, name, fn)
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    const value = fn()
+    db.exec('COMMIT')
+    return value
+  } catch (error) {
+    try {
+      db.exec('ROLLBACK')
+    } catch {
+      // A failed ROLLBACK must not mask the original error.
+    }
     throw error
   }
 }
@@ -438,8 +471,8 @@ function createStores(db: DatabaseSync): {
   const attempts: AttemptStore = {
     async insert(record) {
       db.prepare(
-        `INSERT INTO attempts (id, plan_id, state, owner, lease_token, lease_expires_at, started_at, finished_at, exit_code, error_class)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO attempts (id, plan_id, state, owner, lease_token, lease_expires_at, started_at, finished_at, exit_code, error_class, target_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         record.id,
         record.planId,
@@ -451,6 +484,7 @@ function createStores(db: DatabaseSync): {
         record.finishedAt,
         record.exitCode,
         record.errorClass ?? null,
+        record.targetId ?? null,
       )
     },
     async get(id) {
@@ -463,7 +497,7 @@ function createStores(db: DatabaseSync): {
       const merged = { ...mapAttempt(row), ...patch, state }
       db.prepare(
         `UPDATE attempts
-            SET state = ?, owner = ?, lease_token = ?, lease_expires_at = ?, started_at = ?, finished_at = ?, exit_code = ?, error_class = ?
+            SET state = ?, owner = ?, lease_token = ?, lease_expires_at = ?, started_at = ?, finished_at = ?, exit_code = ?, error_class = ?, target_id = ?
           WHERE id = ?`,
       ).run(
         merged.state,
@@ -474,6 +508,7 @@ function createStores(db: DatabaseSync): {
         merged.finishedAt,
         merged.exitCode,
         merged.errorClass ?? null,
+        merged.targetId ?? null,
         id,
       )
     },
@@ -483,12 +518,20 @@ function createStores(db: DatabaseSync): {
       ).map(mapAttempt)
     },
     async listExpired(now) {
+      // A long run is only stalled when its *live* lease is gone: the attempt's
+      // stored lease timestamp is the value at dispatch time and heartbeats do
+      // not rewrite it. Absent, expired or superseded leases all stall; a
+      // matching live lease keeps the attempt running regardless of its age.
       return asMany<AttemptRow>(
         db
           .prepare(
-            `SELECT * FROM attempts
-              WHERE state = 'running' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
-              ORDER BY lease_expires_at`,
+            `SELECT a.* FROM attempts a
+               LEFT JOIN leases l ON l.target_id = a.target_id
+              WHERE a.state = 'running'
+                AND a.target_id IS NOT NULL
+                AND (l.target_id IS NULL OR l.expires_at <= ? OR l.token <> a.lease_token
+                     OR l.owner <> a.owner)
+              ORDER BY a.started_at`,
           )
           .all(now),
       ).map(mapAttempt)
@@ -546,11 +589,11 @@ function createStores(db: DatabaseSync): {
 
   const approvals: ApprovalStore = {
     async record(approval) {
+      // Append-only: never update an earlier decision. Readers resolve the
+      // latest decision per approver, so a later reject supersedes an approve.
       db.prepare(
         `INSERT INTO approvals (id, target_id, config_digest, approver, decision, reason, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(target_id, config_digest, approver, decision) DO UPDATE SET
-           reason = excluded.reason, created_at = excluded.created_at`,
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         approval.id,
         approval.targetId,
@@ -567,7 +610,7 @@ function createStores(db: DatabaseSync): {
           .prepare(
             `SELECT * FROM approvals
               WHERE target_id = ? AND config_digest = ? AND created_at >= ?
-              ORDER BY created_at`,
+              ORDER BY created_at, rowid`,
           )
           .all(targetId, configDigest, since),
       ).map(mapApproval)
@@ -603,8 +646,9 @@ function createStores(db: DatabaseSync): {
     async insert(record) {
       db.prepare(
         `INSERT INTO artifacts (id, plan_id, target_id, provider, kind, parent_id, path, size_bytes,
-                                checksum, verified_level, verified_at, protected, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                                checksum, verified_level, verified_at, protected, created_at,
+                                lifecycle_state, tombstoned_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       ).run(
         record.id,
         record.planId,
@@ -619,6 +663,8 @@ function createStores(db: DatabaseSync): {
         record.verifiedAt,
         record.protected ? 1 : 0,
         record.createdAt,
+        record.lifecycleState ?? 'live',
+        record.tombstonedAt ?? null,
       )
     },
     async get(id) {
@@ -640,15 +686,47 @@ function createStores(db: DatabaseSync): {
         clauses.push('created_at >= ?')
         params.push(filter.since)
       }
+      const lifecycle = filter.lifecycle ?? 'live'
+      if (lifecycle !== 'any') {
+        clauses.push('lifecycle_state = ?')
+        params.push(lifecycle)
+      }
       const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : ''
       const limit = filter.limit !== undefined ? ` LIMIT ${filter.limit}` : ''
       return asMany<ArtifactRow>(
         db.prepare(`SELECT * FROM artifacts ${where} ORDER BY created_at DESC${limit}`).all(...params),
       ).map(mapArtifact)
     },
-    async remove(ids) {
-      const statement = db.prepare('DELETE FROM artifacts WHERE id = ?')
-      for (const id of ids) statement.run(id)
+    async tombstone(ids, tombstonedAt) {
+      // One savepoint for the whole set: the apply transaction either flips
+      // every eligible row or none, and the read-then-write cannot interleave
+      // with another handle's apply.
+      return withSavepoint(db, 'artifact_tombstone', () => {
+        const result: ArtifactTombstoneResult = {
+          tombstoned: [],
+          alreadyTombstoned: [],
+          missing: [],
+        }
+        const read = db.prepare('SELECT lifecycle_state FROM artifacts WHERE id = ?')
+        const update = db.prepare(
+          `UPDATE artifacts SET lifecycle_state = 'tombstoned', tombstoned_at = ?
+            WHERE id = ? AND lifecycle_state = 'live'`,
+        )
+        for (const id of ids) {
+          const row = asOne<{ lifecycle_state: string }>(read.get(id))
+          if (row === undefined) {
+            result.missing.push(id)
+            continue
+          }
+          if (row.lifecycle_state === 'tombstoned') {
+            result.alreadyTombstoned.push(id)
+            continue
+          }
+          update.run(tombstonedAt, id)
+          result.tombstoned.push(id)
+        }
+        return result
+      })
     },
   }
 
@@ -659,8 +737,8 @@ function createStores(db: DatabaseSync): {
       const availableAt = input.availableAt ?? now
       return withSavepoint(db, 'outbox_append', () => {
         db.prepare(
-          `INSERT INTO outbox (id, topic, payload_json, idempotency_key, status, attempts, available_at, lease_expires_at, created_at, dispatched_at, last_error)
-           VALUES (?, ?, ?, ?, 'pending', 0, ?, NULL, ?, NULL, NULL)
+          `INSERT INTO outbox (id, topic, payload_json, idempotency_key, status, attempts, available_at, lease_expires_at, created_at, dispatched_at, last_error, delivery_token)
+           VALUES (?, ?, ?, ?, 'pending', 0, ?, NULL, ?, NULL, NULL, 0)
            ON CONFLICT(idempotency_key) DO NOTHING`,
         ).run(id, input.topic, JSON.stringify(input.payload), input.idempotencyKey, availableAt, now)
         const row = asOne<OutboxRow>(
@@ -671,7 +749,7 @@ function createStores(db: DatabaseSync): {
       })
     },
     async claim(input) {
-      return withSavepoint(db, 'outbox_claim', () => {
+      return withWriteLock(db, 'outbox_claim', () => {
         const rows = asMany<OutboxRow>(
           db
             .prepare(
@@ -685,38 +763,58 @@ function createStores(db: DatabaseSync): {
         )
         if (rows.length === 0) return []
         const leaseUntil = new Date(Date.parse(input.now) + input.leaseMs).toISOString()
-        for (const row of rows) {
-          db.prepare(
-            `UPDATE outbox
-                SET status = 'processing', lease_expires_at = ?, attempts = attempts + 1
-              WHERE id = ?`,
-          ).run(leaseUntil, row.id)
-        }
+        const claimStatement = db.prepare(
+          `UPDATE outbox
+              SET status = 'processing', lease_expires_at = ?, attempts = attempts + 1,
+                  delivery_token = delivery_token + 1
+            WHERE id = ?`,
+        )
+        for (const row of rows) claimStatement.run(leaseUntil, row.id)
         return rows.map((row) =>
           mapOutbox({
             ...row,
             status: 'processing',
             lease_expires_at: leaseUntil,
             attempts: row.attempts + 1,
+            delivery_token: row.delivery_token + 1,
           }),
         )
       })
     },
-    async markDispatched(id, now) {
+    async markDispatched(id, input) {
+      // The guard is the claim identity: a consumer whose record was reclaimed
+      // (token advanced) or whose lease already lapsed must not confirm.
       const result = db
         .prepare(
-          `UPDATE outbox SET status = 'dispatched', dispatched_at = ?, lease_expires_at = NULL, last_error = NULL WHERE id = ?`,
+          `UPDATE outbox
+              SET status = 'dispatched', dispatched_at = ?, lease_expires_at = NULL, last_error = NULL
+            WHERE id = ? AND status = 'processing' AND delivery_token = ?
+              AND lease_expires_at IS NOT NULL AND lease_expires_at > ?`,
         )
-        .run(now, id)
-      if (Number(result.changes) === 0) throw new Error(`outbox record not found: ${id}`)
+        .run(input.now, id, input.token, input.now)
+      return Number(result.changes) > 0
     },
-    async markFailed(id, error, retryAt) {
+    async markRetry(id, input) {
       const result = db
         .prepare(
-          `UPDATE outbox SET status = 'pending', available_at = ?, lease_expires_at = NULL, last_error = ? WHERE id = ?`,
+          `UPDATE outbox
+              SET status = 'pending', available_at = ?, lease_expires_at = NULL, last_error = ?
+            WHERE id = ? AND status = 'processing' AND delivery_token = ?
+              AND lease_expires_at IS NOT NULL AND lease_expires_at > ?`,
         )
-        .run(retryAt, error, id)
-      if (Number(result.changes) === 0) throw new Error(`outbox record not found: ${id}`)
+        .run(input.retryAt, input.error, id, input.token, input.now)
+      return Number(result.changes) > 0
+    },
+    async markDeadLetter(id, input) {
+      const result = db
+        .prepare(
+          `UPDATE outbox
+              SET status = 'failed', lease_expires_at = NULL, last_error = ?
+            WHERE id = ? AND status = 'processing' AND delivery_token = ?
+              AND lease_expires_at IS NOT NULL AND lease_expires_at > ?`,
+        )
+        .run(input.error, id, input.token, input.now)
+      return Number(result.changes) > 0
     },
     async countByStatus(status) {
       const row = asOne<{ count: number }>(
@@ -735,21 +833,34 @@ function createStores(db: DatabaseSync): {
       )
       return row?.count ?? 0
     },
+    async stats(now) {
+      const counts = new Map<string, number>()
+      for (const row of asMany<{ status: string; count: number }>(
+        db.prepare('SELECT status, COUNT(*) AS count FROM outbox GROUP BY status').all(),
+      )) {
+        counts.set(row.status, row.count)
+      }
+      return {
+        pending: counts.get('pending') ?? 0,
+        processing: counts.get('processing') ?? 0,
+        dispatched: counts.get('dispatched') ?? 0,
+        deadLetter: counts.get('failed') ?? 0,
+        expiredProcessing: await outbox.countExpiredProcessing(now),
+      }
+    },
   }
 
   const leases: LeaseStore = {
     async acquire(input) {
-      return withSavepoint(db, 'lease_acquire', () => {
+      // A live lease always blocks acquisition, including for the same owner:
+      // re-acquiring would hand out a lease without advancing the fence, which
+      // defeats fencing. Callers that already hold the lease must renew it.
+      return withWriteLock(db, 'lease_acquire', () => {
         const existing = asOne<LeaseRow>(
           db.prepare('SELECT * FROM leases WHERE target_id = ?').get(input.targetId),
         )
-        if (existing) {
-          if (existing.owner === input.owner && existing.expires_at > input.now) {
-            return mapLease(existing)
-          }
-          if (existing.owner !== input.owner && existing.expires_at > input.now) {
-            return null
-          }
+        if (existing && existing.expires_at > input.now) {
+          return null
         }
 
         const fence = asOne<{ counter: number }>(
@@ -777,11 +888,14 @@ function createStores(db: DatabaseSync): {
     },
     async renew(input) {
       const expiresAt = new Date(Date.parse(input.now) + input.ttlMs).toISOString()
+      // An expired lease is already up for takeover: renewing it would revive
+      // authority the holder had lost, so the expiry is part of the predicate.
       const result = db
         .prepare(
-          'UPDATE leases SET expires_at = ? WHERE target_id = ? AND owner = ? AND token = ?',
+          `UPDATE leases SET expires_at = ?
+            WHERE target_id = ? AND owner = ? AND token = ? AND expires_at > ?`,
         )
-        .run(expiresAt, input.targetId, input.owner, input.token)
+        .run(expiresAt, input.targetId, input.owner, input.token, input.now)
       return Number(result.changes) > 0
     },
     async release(input) {
@@ -844,6 +958,10 @@ const MIGRATIONS: readonly { name: string; file: URL }[] = [
   { name: '004_assets.sql', file: new URL('./migrations/004_assets.sql', import.meta.url) },
   { name: '005_model_usage.sql', file: new URL('./migrations/005_model_usage.sql', import.meta.url) },
   { name: '006_approvals.sql', file: new URL('./migrations/006_approvals.sql', import.meta.url) },
+  { name: '007_approval_history.sql', file: new URL('./migrations/007_approval_history.sql', import.meta.url) },
+  { name: '008_attempt_target.sql', file: new URL('./migrations/008_attempt_target.sql', import.meta.url) },
+  { name: '009_outbox_delivery.sql', file: new URL('./migrations/009_outbox_delivery.sql', import.meta.url) },
+  { name: '010_artifact_lifecycle.sql', file: new URL('./migrations/010_artifact_lifecycle.sql', import.meta.url) },
 ]
 
 function runMigrations(db: DatabaseSync): void {
