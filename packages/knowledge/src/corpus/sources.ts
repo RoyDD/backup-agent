@@ -67,6 +67,7 @@ function readLocalDocs(): CorpusSource[] {
   for (const doc of LOCAL_DOCS) {
     if (!existsSync(doc.path)) continue
     sources.push({
+      origin: 'local',
       sourceId: doc.sourceId,
       title: doc.title,
       url: doc.path,
@@ -79,18 +80,19 @@ function readLocalDocs(): CorpusSource[] {
   return sources
 }
 
-function readSnapshot(corpusDir: string): CorpusSource[] {
-  if (!existsSync(corpusDir)) return []
+function readDir(dir: string, origin: 'snapshot' | 'wiki'): CorpusSource[] {
+  if (!existsSync(dir)) return []
   const sources: CorpusSource[] = []
-  for (const name of readdirSync(corpusDir).sort()) {
+  for (const name of readdirSync(dir).sort()) {
     if (!name.endsWith('.md')) continue
-    const raw = readFileSync(join(corpusDir, name), 'utf8')
+    const raw = readFileSync(join(dir, name), 'utf8')
     const { fields, body } = parseFrontmatter(raw)
     sources.push({
       sourceId: fields['source_id'] ?? basename(name, '.md'),
       title: fields['title'] ?? basename(name, '.md'),
       url: fields['url'] ?? '',
       kind: fields['kind'] === 'md' ? 'md' : 'html',
+      origin,
       version: fields['version'] ?? 'unknown',
       license: fields['license'] ?? 'unknown',
       fetchedAt: fields['fetched_at'],
@@ -101,8 +103,21 @@ function readSnapshot(corpusDir: string): CorpusSource[] {
   return sources
 }
 
+/**
+ * `knowledge-corpus/wiki/` holds summaries of llm-wiki articles that belong to the
+ * evidence base but are curated elsewhere. They are kept separate from the pinned
+ * upstream snapshot so `manifest.json` keeps meaning "what was fetched, when".
+ */
+function readSnapshot(corpusDir: string): CorpusSource[] {
+  return readDir(corpusDir, 'snapshot')
+}
+
+function readWikiExports(corpusDir: string): CorpusSource[] {
+  return readDir(join(corpusDir, 'wiki'), 'wiki')
+}
+
 export function loadSources(corpusDir = DEFAULT_CORPUS_DIR, options: { includeLocalDocs?: boolean } = {}): CorpusSource[] {
-  const sources = [...readSnapshot(corpusDir)]
+  const sources = [...readSnapshot(corpusDir), ...readWikiExports(corpusDir)]
   if (options.includeLocalDocs !== false) sources.push(...readLocalDocs())
   if (sources.length === 0) {
     throw new Error(`no corpus sources found (looked in ${corpusDir} and the project docs)`)

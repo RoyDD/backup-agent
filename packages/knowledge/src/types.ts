@@ -9,6 +9,8 @@
 
 export interface CorpusSource {
   sourceId: string
+  /** Where the text came from: pinned upstream snapshot, llm-wiki export, or a project doc. */
+  origin?: 'snapshot' | 'wiki' | 'local'
   title: string
   url: string
   kind: 'html' | 'md'

@@ -62,6 +62,28 @@ an archived WAL stream for point-in-time recovery.
   'utf8',
 )
 
+mkdirSync(join(corpusDir, 'wiki'), { recursive: true })
+writeFileSync(
+  join(corpusDir, 'wiki', 'pg-wal-naming.md'),
+  `---
+source_id: wiki-pg-wal-naming
+title: WAL naming
+url: llm-wiki://postgresql-backup-recovery/wiki/references/pg-wal-naming-and-lsn-arithmetic.md
+kind: md
+origin: wiki
+version: wiki-2026-11-12
+license: internal
+---
+
+## Segment naming
+
+The file name 000000010000000000000001 encodes timeline, log id and segment number;
+pf_walfile_name returns the preceding file when the LSN sits exactly on a boundary.
+Cross-timeline comparisons of segment names are meaningless.
+`,
+  'utf8',
+)
+
 buildIndex({ dbPath, corpusDir, includeLocalDocs: false })
 
 afterAll(() => {
@@ -95,6 +117,17 @@ describe('buildIndex + search', () => {
     try {
       const hits = search(db, 'recovery_target_lsn 时间点恢复', { k: 3 })
       expect(hits[0]?.text).toContain('recovery_target_lsn')
+    } finally {
+      db.close()
+    }
+  })
+
+  it('indexes llm-wiki exports kept under corpus/wiki', () => {
+    const db = openIndex(dbPath)
+    try {
+      const hits = search(db, 'timeline segment boundary file name', { k: 3, sources: ['wiki-pg-wal-naming'] })
+      expect(hits.length).toBeGreaterThan(0)
+      expect(hits[0]?.sourceId).toBe('wiki-pg-wal-naming')
     } finally {
       db.close()
     }

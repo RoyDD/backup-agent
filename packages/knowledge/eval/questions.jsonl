@@ -98,3 +98,11 @@
 {"id": "c16", "kind": "confusable", "lang": "en", "question": "What defines a verified recovery point rather than a successful backup?", "gold": [{"source": "local-plan-v1.1", "heading": "8. 校验分级", "contains": "VRP"}]}
 {"id": "c17", "kind": "confusable", "lang": "zh", "question": "Outbox 与直接调用外部副作用有什么区别？", "gold": [{"source": "local-plan-v1.1", "heading": "6. 控制面一致性", "contains": "Outbox"}]}
 {"id": "c18", "kind": "confusable", "lang": "en", "question": "Why must every plan step declare an idempotencyKey?", "gold": [{"source": "local-plan-v1.1", "heading": "5. 计划中间表示", "contains": "idempotencyKey"}]}
+{"id": "w01", "kind": "fact", "lang": "zh", "question": "判断归档是否停滞时，pg_stat_archiver 需要采样哪两个增量？", "gold": [{"source": "wiki-pg-archiver-health", "contains": "两次采样"}]}
+{"id": "w02", "kind": "fact", "lang": "en", "question": "Why is it unsafe to assume every segment older than last_archived_wal was archived?", "gold": [{"source": "wiki-pg-archiver-health", "contains": "not safe to assume"}]}
+{"id": "w03", "kind": "troubleshoot", "lang": "zh", "question": "failed_count 在涨但 last_archived_wal 也前进，PITR 窗口断了吗？", "gold": [{"source": "wiki-pg-archiver-health", "contains": "间歇失败"}]}
+{"id": "w04", "kind": "troubleshoot", "lang": "en", "question": "failed_count is flat but nothing new reaches the archive; what do you inspect first?", "gold": [{"source": "wiki-pg-archiver-health", "contains": "ready_segments"}]}
+{"id": "w05", "kind": "multihop", "lang": "zh", "question": "为什么不能只凭 last_archived_wal 证明归档没有缺口？", "gold": [{"source": "wiki-pg-archiver-health", "contains": "连续性"}, {"source": "wiki-pg-archiver-health", "contains": "promoting a standby"}]}
+{"id": "w06", "kind": "multihop", "lang": "en", "question": "How do you turn last_archived_wal into an archived lag in bytes?", "gold": [{"source": "wiki-pg-wal-naming", "contains": "archived_lag"}]}
+{"id": "w07", "kind": "confusable", "lang": "zh", "question": "算归档滞后时该用 pg_current_wal_lsn 还是 pg_current_wal_flush_lsn？", "gold": [{"source": "wiki-pg-wal-naming", "contains": "flush"}]}
+{"id": "w08", "kind": "confusable", "lang": "en", "question": "At an exact segment boundary, does pg_walfile_name return the new segment or the preceding one?", "gold": [{"source": "wiki-pg-wal-naming", "contains": "preceding"}]}

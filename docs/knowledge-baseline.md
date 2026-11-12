@@ -161,6 +161,32 @@ JEV 原文那条路走不通：OpenRouter 的 `typesafe/jev-router` 返回 **402
 
 顺带修掉一个打包 bug：`dist/bkagent-knowledge.mjs` 里 `import.meta.url` 上溯两级会让默认索引落到 `/home/roy/var/knowledge.sqlite`。改为向上寻找 `pnpm-workspace.yaml`，源码态与 bundle 态解析到同一个 workspace 根，并加了回归测试。
 
+## 9. llm-wiki 同步
+
+PG 领域知识同时在两个地方积累：`llm-wiki` 的 `postgresql-backup-recovery` topic（25+ 篇编译条目，带证据分级）
+和这里的 SAG2 证据库（原文 passage，用于 `kb_search`）。同步方向是 **wiki → 证据库**：
+
+- wiki 是**事实源**，条目经过交叉核对与 A/B/C 分级；hub 在 `/root/work/llm-wiki`，本仓库无权读写，
+  只能经 llm-wiki MCP 访问。
+- 证据库接收它的**摘要视图**：`knowledge-corpus/wiki/<slug>.md`，frontmatter 带
+  `origin: wiki` 与 `url: llm-wiki://<topic>/wiki/<category>/<slug>.md` 指回原条目。
+- 摘要是派生物（与索引同理）：原条目更新后重新导出，不在这里二次编辑。
+
+为什么放独立目录而不是混进上游快照：`knowledge-corpus/manifest.json` 的语义是「抓了什么、何时抓的」，
+wiki 摘要不是抓取产物。`src/corpus/sources.ts` 分别读 `knowledge-corpus/*.md`（快照）与
+`knowledge-corpus/wiki/*.md`（摘要），passage 上打 `origin`，便于按来源过滤或排查。
+
+本轮同步两篇：`pg-archiver-health-evidence-set`（归档健康证据集）与
+`pg-wal-naming-and-lsn-arithmetic`（WAL 段命名与 LSN 换算）。索引从 22 源 / 1,514 passage
+变为 24 源 / 1,530 passage（建库 321 ms，3.2 MiB）。
+
+代价要说清：**同一批 100 题，R@10 从 48.27% 降到 47.04%**（MRR 0.3405 → 0.3220）。
+原因是摘要重述了主文档里的同一批事实，在词法检索里形成近重复干扰项。这不是 bug，是「知识更多、
+精确率略降」的取舍；补了 8 道针对同步内容的题后，108 题口径为 **R@10 50.03%、multihop 27.38%**——
+覆盖到了新知识，但两套题集不可直接比较。
+
+如果只需要原快照口径，把 `knowledge-corpus/wiki/` 移开再 `index` 即可。
+
 ## 9. 结论
 
 1. **增益主要来自扩展，而不是逐轮重排**：`sag2` r2 48.27% 对 `expand-only` 47.13%，逐轮重选只贡献 +1.14pp。论文里这一档差距是 86.62% vs 61.34%——差别在于 JEV 是语义判定，而我们的代理打分器只会算词面覆盖。**结论是打分器而非循环结构才是瓶颈**，继续加轮次不会有收益（r3 与 r2 完全相同，只多 26 ms）。
