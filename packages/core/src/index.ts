@@ -19,6 +19,7 @@ export * from './ports/repository'
 
 export * from './plan/index'
 export * from './security/principal-registry'
+export * from './security/four-eyes'
 export * from './executor/index'
 export * from './runner/index'
 export * from './ops/index'

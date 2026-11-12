@@ -18,9 +18,11 @@ import {
   buildOpsReport,
   checkBudget,
   connectionEnv,
+  escalateRisk,
   estimateCost,
   evaluateAssetRpo,
   fingerprintPlan,
+  fourEyesStatus,
   forecastCapacity,
   newId,
   loadPrincipalRegistry,
@@ -28,6 +30,7 @@ import {
   planRetention,
   policyFor,
   preparePlan,
+  requiredApprovals,
   renderDashboard,
   renderMetrics,
   renderReportMarkdown,
@@ -113,6 +116,8 @@ Usage:
   bkagent cost record --db <path> --task <t> --model <m> --input-tokens N --output-tokens N
                       [--ticket <id>] [--policy <file>]
   bkagent cost report --db <path> [--since <iso|Nd>]
+  bkagent approve --db <path> --target <id> --digest <digest> --approver <id> [--reject] [--reason <text>]
+  bkagent approvals --db <path> --target <id> --digest <digest> [--ttl-minutes N]
 
 Environment:
   BKAGENT_DSN    Default DSN when --dsn is omitted
@@ -702,19 +707,50 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
         const instance = await postgresEngine.probe(executor, connection)
         const ctx = planContext(instance, requestDigest(request))
         const built = postgresEngine.planLogicalRestore(request, ctx)
-        if (requiresApproval(built.risk) && !values.yes) {
-          writeError(`bkagent: plan risk is ${built.risk}; re-run with --yes to proceed\n`)
+        const asset =
+          values.db === undefined
+            ? null
+            : await withRepo(resolveDb(values.db), async (repo) => repo.assets.get(built.targetId))
+        const effectiveRisk = escalateRisk(built.risk, asset)
+        const gatePlan = effectiveRisk === built.risk ? built : { ...built, risk: effectiveRisk }
+
+        if (requiresApproval(gatePlan.risk) && !values.yes) {
+          writeError(`bkagent: plan risk is ${gatePlan.risk}; re-run with --yes to proceed\n`)
           return 2
         }
+
+        if (requiredApprovals(gatePlan.risk) > 0) {
+          if (values.db === undefined) {
+            writeError(
+              'bkagent: production-destructive restore requires --db for four-eyes approvals\n',
+            )
+            return 2
+          }
+          const digest = requestDigest(request)
+          const since = new Date(Date.now() - 3_600_000).toISOString()
+          const approvals = await withRepo(resolveDb(values.db), async (repo) =>
+            repo.approvals.listFor(gatePlan.targetId, digest, since),
+          )
+          const status = fourEyesStatus(gatePlan.risk, approvals, new Date())
+          if (!status.ok) {
+            writeError(
+              `bkagent: production-destructive restore requires ${status.required} distinct approvals; have ${status.distinct}.\n` +
+                `digest: ${digest}\n` +
+                `approve: bkagent approve --db <path> --target ${gatePlan.targetId} --digest ${digest} --approver <id>\n`,
+            )
+            return 2
+          }
+        }
+
         const prepared = await preparePlan({
-          plan: built,
+          plan: gatePlan,
           refresh: async () => {
             const live = await postgresEngine.probe(executor, connection)
             const now = new Date().toISOString()
             return {
-              ...built.fingerprint,
-              systemIdentifier: live.systemIdentifier ?? built.fingerprint.systemIdentifier,
-              targetOid: live.databaseOid ?? built.fingerprint.targetOid,
+              ...gatePlan.fingerprint,
+              systemIdentifier: live.systemIdentifier ?? gatePlan.fingerprint.systemIdentifier,
+              targetOid: live.databaseOid ?? gatePlan.fingerprint.targetOid,
               createdAt: now,
               expiresAt: new Date(Date.parse(now) + 3_600_000).toISOString(),
             }
@@ -1829,6 +1865,68 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
         }
         write(
           `${JSON.stringify({ since, calls: usage.length, costUsd: usage.reduce((sum, record) => sum + record.costUsd, 0), byTask: [...byTask.values()] }, null, 2)}\n`,
+        )
+        return 0
+      }
+
+      case 'approve': {
+        const { values } = parseArgs({
+          args: [...rest],
+          allowPositionals: false,
+          options: {
+            db: { type: 'string' },
+            target: { type: 'string' },
+            digest: { type: 'string' },
+            approver: { type: 'string' },
+            reject: { type: 'boolean', default: false },
+            reason: { type: 'string' },
+          },
+        })
+        if (
+          values.target === undefined ||
+          values.digest === undefined ||
+          values.approver === undefined
+        ) {
+          writeError('bkagent: approve requires --target --digest --approver\n')
+          return 2
+        }
+        const approval = {
+          id: newId('apr'),
+          targetId: asTargetId(values.target),
+          configDigest: values.digest,
+          approver: values.approver,
+          decision: values.reject ? ('reject' as const) : ('approve' as const),
+          reason: values.reason ?? null,
+          createdAt: new Date().toISOString(),
+        }
+        await withRepo(resolveDb(values.db), async (repo) => repo.approvals.record(approval))
+        write(`${JSON.stringify(approval, null, 2)}\n`)
+        return 0
+      }
+
+      case 'approvals': {
+        const { values } = parseArgs({
+          args: [...rest],
+          allowPositionals: false,
+          options: {
+            db: { type: 'string' },
+            target: { type: 'string' },
+            digest: { type: 'string' },
+            'ttl-minutes': { type: 'string', default: '60' },
+          },
+        })
+        if (values.target === undefined || values.digest === undefined) {
+          writeError('bkagent: approvals requires --target and --digest\n')
+          return 2
+        }
+        const ttlMs = parseNonNegativeInt(values['ttl-minutes'], '--ttl-minutes') * 60_000
+        const since = new Date(Date.now() - ttlMs).toISOString()
+        const approvals = await withRepo(resolveDb(values.db), async (repo) =>
+          repo.approvals.listFor(asTargetId(values.target as string), values.digest as string, since),
+        )
+        const status = fourEyesStatus('production-destructive', approvals, new Date(), ttlMs)
+        write(
+          `${JSON.stringify({ targetId: values.target, digest: values.digest, status, approvals }, null, 2)}\n`,
         )
         return 0
       }

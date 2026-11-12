@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest'
 
 import { evaluateAssetRpo } from '../src/ops/assets'
 import {
+  escalateRisk,
+  fourEyesStatus,
+  requiredApprovals,
+} from '../src/security/four-eyes'
+import {
   checkBudget,
   estimateCost,
   parseModelPolicy,
@@ -178,3 +183,60 @@ describe('asset RPO', () => {
 
 // keep the mandate import used for fixture consistency in this file
 void makeMandate
+
+describe('four-eyes approvals', () => {
+  const now = new Date('2026-01-01T01:00:00.000Z')
+  const approval = (approver: string, at = '2026-01-01T00:30:00.000Z', decision: 'approve' | 'reject' = 'approve') => ({
+    approver,
+    decision,
+    createdAt: at,
+  })
+
+  it('requires two distinct approvers for production-destructive plans', () => {
+    expect(requiredApprovals('production-destructive')).toBe(2)
+    expect(requiredApprovals('destructive')).toBe(0)
+    expect(fourEyesStatus('production-destructive', [approval('alice')], now)).toEqual({
+      required: 2,
+      distinct: 1,
+      ok: false,
+      reason: 'insufficient-approvals',
+    })
+    expect(
+      fourEyesStatus('production-destructive', [approval('alice'), approval('bob')], now).ok,
+    ).toBe(true)
+  })
+
+  it('ignores rejects, duplicates and expired approvals', () => {
+    const status = fourEyesStatus(
+      'production-destructive',
+      [approval('alice'), approval('alice'), approval('bob', '2026-01-01T00:30:00.000Z', 'reject')],
+      now,
+    )
+    expect(status.distinct).toBe(1)
+    expect(status.ok).toBe(false)
+
+    const expired = fourEyesStatus(
+      'production-destructive',
+      [approval('alice', '2025-01-01T00:00:00.000Z'), approval('bob', '2025-01-01T00:00:00.000Z')],
+      now,
+    )
+    expect(expired.ok).toBe(false)
+  })
+
+  it('escalates destructive restores on protected production assets', () => {
+    const production = {
+      targetId: asTargetId('pg-prod'),
+      engine: 'postgres',
+      environment: 'production' as const,
+      owner: 'dba',
+      criticality: 'critical' as const,
+      dataClassification: 'confidential' as const,
+      rpoMinutes: 60,
+      rtoMinutes: 120,
+      protected: true,
+    }
+    expect(escalateRisk('destructive', production)).toBe('production-destructive')
+    expect(escalateRisk('destructive', { ...production, protected: false })).toBe('destructive')
+    expect(escalateRisk('destructive', null)).toBe('destructive')
+  })
+})

@@ -91,7 +91,7 @@ export function createHandlers(run, knowledgeRun = run) {
       if (args.createDatabase === true) argv.push('--create-database')
       if (args.clean === true) argv.push('--clean')
       if (args.noOwner === true) argv.push('--no-owner')
-      if (args.db !== undefined) argv.push('--db', args.db)
+      argv.push('--db', args.db ?? defaultDb())
       return parseCliResult(await run(argv))
     },
 

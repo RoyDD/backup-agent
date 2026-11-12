@@ -165,6 +165,21 @@ export interface ModelUsageStore {
   listSince(since: string): Promise<ModelUsageRecord[]>
 }
 
+export interface ApprovalRecord {
+  id: string
+  targetId: TargetId
+  configDigest: string
+  approver: string
+  decision: 'approve' | 'reject'
+  reason: string | null
+  createdAt: string
+}
+
+export interface ApprovalStore {
+  record(approval: ApprovalRecord): Promise<void>
+  listFor(targetId: TargetId, configDigest: string, since: string): Promise<ApprovalRecord[]>
+}
+
 export interface OutboxAppendInput {
   topic: string
   payload: unknown
@@ -208,6 +223,7 @@ export interface Repository {
   artifacts: ArtifactStore
   assets: AssetStore
   modelUsage: ModelUsageStore
+  approvals: ApprovalStore
   outbox: OutboxStore
   leases: LeaseStore
   lineage: LineageStore

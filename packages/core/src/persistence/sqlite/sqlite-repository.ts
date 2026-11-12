@@ -9,6 +9,8 @@ import type {
   ArtifactFilter,
   ArtifactRecord,
   ArtifactStore,
+  ApprovalRecord,
+  ApprovalStore,
   AssetStore,
   AttemptRecord,
   ModelUsageRecord,
@@ -97,6 +99,16 @@ interface LeaseRow {
   owner: string
   token: number
   expires_at: string
+}
+
+interface ApprovalRow {
+  id: string
+  target_id: string
+  config_digest: string
+  approver: string
+  decision: string
+  reason: string | null
+  created_at: string
 }
 
 interface ModelUsageRow {
@@ -225,6 +237,18 @@ function mapOutbox(row: OutboxRow): OutboxRecord {
   }
 }
 
+function mapApproval(row: ApprovalRow): ApprovalRecord {
+  return {
+    id: row.id,
+    targetId: row.target_id as TargetId,
+    configDigest: row.config_digest,
+    approver: row.approver,
+    decision: row.decision as ApprovalRecord['decision'],
+    reason: row.reason,
+    createdAt: row.created_at,
+  }
+}
+
 function mapModelUsage(row: ModelUsageRow): ModelUsageRecord {
   return {
     id: row.id,
@@ -314,6 +338,7 @@ function createStores(db: DatabaseSync): {
   artifacts: ArtifactStore
   assets: AssetStore
   modelUsage: ModelUsageStore
+  approvals: ApprovalStore
   outbox: OutboxStore
   leases: LeaseStore
   lineage: LineageStore
@@ -516,6 +541,36 @@ function createStores(db: DatabaseSync): {
       return asMany<AssetRow>(db.prepare('SELECT * FROM assets ORDER BY target_id').all()).map(
         mapAsset,
       )
+    },
+  }
+
+  const approvals: ApprovalStore = {
+    async record(approval) {
+      db.prepare(
+        `INSERT INTO approvals (id, target_id, config_digest, approver, decision, reason, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(target_id, config_digest, approver, decision) DO UPDATE SET
+           reason = excluded.reason, created_at = excluded.created_at`,
+      ).run(
+        approval.id,
+        approval.targetId,
+        approval.configDigest,
+        approval.approver,
+        approval.decision,
+        approval.reason,
+        approval.createdAt,
+      )
+    },
+    async listFor(targetId, configDigest, since) {
+      return asMany<ApprovalRow>(
+        db
+          .prepare(
+            `SELECT * FROM approvals
+              WHERE target_id = ? AND config_digest = ? AND created_at >= ?
+              ORDER BY created_at`,
+          )
+          .all(targetId, configDigest, since),
+      ).map(mapApproval)
     },
   }
 
@@ -768,7 +823,7 @@ function createStores(db: DatabaseSync): {
     },
   }
 
-  return { tickets, mandates, plans, attempts, artifacts, assets, modelUsage, outbox, leases, lineage }
+  return { tickets, mandates, plans, attempts, artifacts, assets, modelUsage, approvals, outbox, leases, lineage }
 }
 
 function lockStore<T extends object>(store: T, mutex: Mutex): T {
@@ -788,6 +843,7 @@ const MIGRATIONS: readonly { name: string; file: URL }[] = [
   { name: '003_attempt_error.sql', file: new URL('./migrations/003_attempt_error.sql', import.meta.url) },
   { name: '004_assets.sql', file: new URL('./migrations/004_assets.sql', import.meta.url) },
   { name: '005_model_usage.sql', file: new URL('./migrations/005_model_usage.sql', import.meta.url) },
+  { name: '006_approvals.sql', file: new URL('./migrations/006_approvals.sql', import.meta.url) },
 ]
 
 function runMigrations(db: DatabaseSync): void {
@@ -869,6 +925,7 @@ export async function createSqliteRepository(
     artifacts: lockStore(stores.artifacts, mutex),
     assets: lockStore(stores.assets, mutex),
     modelUsage: lockStore(stores.modelUsage, mutex),
+    approvals: lockStore(stores.approvals, mutex),
     outbox: lockStore(stores.outbox, mutex),
     leases: lockStore(stores.leases, mutex),
     lineage: lockStore(stores.lineage, mutex),

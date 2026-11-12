@@ -12,7 +12,7 @@
     "test:watch": "vitest",
     "typecheck": "pnpm -r --parallel typecheck",
     "bkagent": "tsx packages/cli/src/main.ts",
-    "build:cli": "esbuild packages/cli/src/main.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/bkagent.mjs --external:node:*",
+    "build:cli": "esbuild packages/cli/src/main.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/bkagent.mjs --external:node:* && rm -rf dist/migrations && cp -R packages/core/src/persistence/sqlite/migrations dist/migrations",
     "verify:skills": "node scripts/skills-manifest.mjs --check",
     "build:knowledge": "esbuild packages/knowledge/src/main.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/bkagent-knowledge.mjs --external:node:*"
   },
