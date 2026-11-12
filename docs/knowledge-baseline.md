@@ -136,6 +136,29 @@ gold 声明为 `{source, heading?, contains?}`，或 `{source, passage:"source#o
 
 接线验证（非质量结论）：把测试夹具当作 `command` 后端跑全量 100 题，R@10 变成 34.20%、p50 196 ms——排序确实由该后端决定，端口不是装饰。夹具只是词面重叠，因此这个数字不能与 `lexical` 并列比较。
 
+### 真模型验证（2026-11-12）
+
+JEV 原文那条路走不通：OpenRouter 的 `typesafe/jev-router` 返回 **402（账户从未充值）**，opencode-go 目录里也没有 jev 模型。可用的真实模型只有 OpenCode Go 的 `deepseek-v4.1-flash`（`https://opencode.ai/inference/go/openai/v1`，需要 API key 与 `x-opencode-session`）。
+
+用 `scripts/rerank-llm.mjs`（OpenAI 兼容 shim）把它接到 `--scorer command`，在 **24 题平衡子集**（每类 6 题、中英各 3）上跑同一套 `sag2` 循环，`--scorer-window 24`：
+
+| 指标（n=24） | lexical | deepseek-v4.1-flash | Δ |
+|---|---|---|---|
+| R@1 | 10.42% | 30.90% | +20.48 |
+| R@2 | 19.79% | 35.42% | +15.63 |
+| R@5 | 32.78% | 40.28% | +7.50 |
+| R@10 | 46.94% | 49.38% | +2.44 |
+| MRR@10 | 0.2667 | **0.5152** | +0.2485 |
+| multihop R@10 | 15.28% | 23.61% | +8.33 |
+| fact / troubleshoot / confusable R@10 | 50.00 / 75.00 / 47.50 | 50.00 / 75.00 / 48.89 | ~0 |
+| zh / en R@10 | 31.25 / 62.64 | 39.86 / 58.89 | +8.61 / −3.75 |
+
+读法：语义打分主要买到了**精度**（R@1 翻三倍、MRR 翻倍），多跳的尾部召回只涨 2.4pp——因为窗口 24 限制了它能重排的范围，也因为它仍是在「已经召回的候选」里挑。中文涨、英文略降，说明模型偏好与词法排序并不总一致。
+
+代价：单题平均 **71.9 s**、p95 113 s（2 轮 × 每轮一次 24 候选请求，含偶发重试），全量 100 题约 2 小时。这只能做离线评测，不能进交互路径；成本按 Go 定价约 0.05 美元/24 题。
+
+实现上补了两处必要的工程细节：OpenCode Go 需要 `x-opencode-session`；模型偶尔会漏掉一两个 passage id，shim 只对漏掉的 id 重问（最多 3 次），仍不齐则退出码 3——不静默补 0。
+
 顺带修掉一个打包 bug：`dist/bkagent-knowledge.mjs` 里 `import.meta.url` 上溯两级会让默认索引落到 `/home/roy/var/knowledge.sqlite`。改为向上寻找 `pnpm-workspace.yaml`，源码态与 bundle 态解析到同一个 workspace 根，并加了回归测试。
 
 ## 9. 结论
@@ -156,4 +179,4 @@ gold 声明为 `{source, heading?, contains?}`，或 `{source, passage:"source#o
 | P1+ | 语料补 `pg_probackup`、WAL-G 的 S3/delete 细节 | 覆盖 provider 差异 |
 | P4 | 接 dsh agent 层只读工具（只返回证据+引用） | 已完成 `kb_search`；后续只是参数透传 |
 
-> P3 的端口与契约已完成，模型档受环境限制（无 torch/权重、HF 不可达、无 JEV key）。接入时不改 `pipeline.ts`，只换 `--scorer`。
+> P3 的端口与契约已完成，并已用 OpenCode Go 的 `deepseek-v4.1-flash` 在 24 题子集上验证（R@1 10.42%→30.90%，MRR 0.2667→0.5152）。JEV 原文口径仍需 OpenRouter 额度；接入时不改 `pipeline.ts`，只换 `--scorer`。

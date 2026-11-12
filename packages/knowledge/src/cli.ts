@@ -31,9 +31,10 @@ Usage:
                                   [--scorer lexical|command|http]
                                   [--scorer-arg <argv>]... [--scorer-url <url>]
                                   [--scorer-model <id>] [--scorer-key-env <VAR>] [--scorer-timeout <ms>]
+                                  [--scorer-window N]
   bkagent knowledge eval [--questions <path>] [--k N] [--db <path>] [--json <out>]
                          [--expand aliases|none] [--mode bm25|sag2|expand-only] [--rounds N]
-                         [--seed-k N] [--terms N] [--diversify on|off] [--scorer ...]
+                         [--seed-k N] [--terms N] [--diversify on|off] [--scorer ...] [--scorer-window N]
   bkagent knowledge scorer [--scorer lexical|command|http] [same scorer flags]
   bkagent knowledge stats [--db <path>]
 `
@@ -45,6 +46,7 @@ const SCORER_OPTIONS = {
   'scorer-model': { type: 'string' },
   'scorer-key-env': { type: 'string' },
   'scorer-timeout': { type: 'string' },
+  'scorer-window': { type: 'string' },
 } satisfies ParseArgsConfig['options']
 
 interface ScorerFlags {
@@ -54,6 +56,7 @@ interface ScorerFlags {
   'scorer-model'?: string | undefined
   'scorer-key-env'?: string | undefined
   'scorer-timeout'?: string | undefined
+  'scorer-window'?: string | undefined
 }
 
 function scorerFrom(flags: ScorerFlags): ScorerPort {
@@ -136,6 +139,7 @@ async function commandAsk(args: string[]): Promise<number> {
       ...(values.terms ? { termsPerRound: Number(values.terms) } : {}),
       diversify: values.diversify === 'on',
       scorer,
+      ...(values['scorer-window'] ? { scorerWindow: Number(values['scorer-window']) } : {}),
     })
     if (values.json) {
       process.stdout.write(`${JSON.stringify({ question, hits, trace }, null, 2)}\n`)
@@ -200,6 +204,7 @@ async function commandEval(args: string[]): Promise<number> {
       ...(values.terms ? { termsPerRound: Number(values.terms) } : {}),
       diversify: values.diversify === 'on',
       scorer,
+      ...(values['scorer-window'] ? { scorerWindow: Number(values['scorer-window']) } : {}),
     })
 
     const pct = (value: number): string => `${(value * 100).toFixed(2)}%`

@@ -49,6 +49,13 @@ export interface PipelineOptions {
   sources?: string[]
   /** Scoring backend; defaults to the deterministic lexical blend. */
   scorer?: ScorerPort
+  /**
+   * Cap on how many candidates an external scorer sees per round, taken from the
+   * lexical ranking. Candidates outside the window become ineligible for the
+   * final top-k, so a remote scorer is never charged for passages that cannot
+   * rank anyway. Unset = score the whole pool.
+   */
+  scorerWindow?: number
 }
 
 export interface PipelineTrace {
@@ -135,20 +142,28 @@ export async function runPipeline(
     )
 
     if (scorer.id !== lexicalScorer.id) {
+      const window = options.scorerWindow
+      let eligible = scored
+      if (window !== undefined && window > 0 && scored.length > window) {
+        eligible = [...scored].sort((a, b) => b.evidence - a.evidence || a.id - b.id).slice(0, window)
+        const inWindow = new Set(eligible.map((candidate) => candidate.id))
+        scored = scored.map((candidate) => (inWindow.has(candidate.id) ? candidate : { ...candidate, evidence: -1 }))
+      }
       const scores = await scorer.score({
         question,
         context: [...context],
-        candidates: scored.map((candidate) => ({
+        candidates: eligible.map((candidate) => ({
           id: candidate.id,
           text: candidate.text,
           headingPath: candidate.headingPath,
           features: candidate.features,
         })),
       })
-      scored = scored.map((candidate, index) => ({
-        ...candidate,
-        evidence: clamp(scores[index] ?? 0),
-      }))
+      const byId = new Map(eligible.map((candidate, index) => [candidate.id, clamp(scores[index] ?? 0)]))
+      scored = scored.map((candidate) => {
+        const value = byId.get(candidate.id)
+        return value === undefined ? candidate : { ...candidate, evidence: value }
+      })
     }
 
     const key = order === 'selection' ? (entry: Scored) => selectionValue(entry.evidence, entry.novelty) : (entry: Scored) => entry.evidence

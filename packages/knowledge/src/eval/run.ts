@@ -100,6 +100,8 @@ export interface EvalOptions {
   diversify?: boolean
   /** Scoring backend; defaults to the deterministic lexical blend. */
   scorer?: ScorerPort
+  /** Cap on candidates sent to an external scorer per round. */
+  scorerWindow?: number
 }
 
 export async function runEval(
@@ -131,6 +133,7 @@ export async function runEval(
       ...(options.termsPerRound === undefined ? {} : { termsPerRound: options.termsPerRound }),
       ...(options.diversify === undefined ? {} : { diversify: options.diversify }),
       ...(options.scorer === undefined ? {} : { scorer: options.scorer }),
+      ...(options.scorerWindow === undefined ? {} : { scorerWindow: options.scorerWindow }),
     })
     latencies.push(pipeline.trace.ms)
     const hits = pipeline.hits.map((hit) => hit.passageId)
