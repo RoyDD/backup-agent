@@ -1,6 +1,6 @@
 # backup-agent
 
-PostgreSQL 备份恢复 Agent 的确定性内核。设计基线见 `../docs/plan-v1.1.md`。
+PostgreSQL 备份恢复 Agent 的确定性内核。设计基线见 `../docs/plan-v1.1.md`；架构与流程图见 [`docs/architecture.md`](docs/architecture.md)。
 
 ## 状态
 

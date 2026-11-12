@@ -22,6 +22,10 @@ scripts/install-dsh.sh web
 
 重启 dsh 后，在会话创建时选择「PostgreSQL 备份恢复」预设。
 
+## 调用时序
+
+工具调用、审批与知识检索的时序见 [architecture.md](architecture.md#3-dsh-调用时序)。
+
 ## 工具
 
 | 工具 | 作用 | 风险 |
