@@ -17,6 +17,7 @@ It is not a scheduler, and it is not a shell wrapper around `pg_dump`.
 - Design baseline: `../docs/plan-v1.1.md` (kept outside Git; v1.0 is archived there).
 - Architecture and execution flow: [`docs/architecture.md`](docs/architecture.md).
 - Operator manual (command map, walkthroughs, troubleshooting): [`docs/usage.md`](docs/usage.md).
+- Chinese translation of this file: [`README.cn.md`](README.cn.md). The English text is canonical; the translation may lag behind.
 
 ## Scope
 

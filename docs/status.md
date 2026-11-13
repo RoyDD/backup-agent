@@ -1,166 +1,57 @@
-# Implementation status
+# 实现状态
 
-Scope: a single-host local control plane. This file is the current status
-record; the design baseline is `../docs/plan-v1.1.md` (not tracked in Git).
+范围为**单机本地控制面**。状态与未达成条目以本文件与 `plan-v1.1.md` §22 为准；设计基线见 `../docs/plan-v1.1.md`，架构见 [`architecture.md`](architecture.md)。
 
-## Milestones
+## 里程碑
 
-P0–P6 are implemented.
+P0–P6 里程碑均已完成：
 
-- **P0**: domain model, Plan IR validation / fingerprint / rebase, the
-  `Executor` port, the SQLite control database (Outbox / leases and fencing /
-  reconciliation), `bkagent inspect`.
-- **P0.5**: 57-entry failure catalog, 15 local reproductions, error
-  classification and preflight rules ([`failure-catalog.md`](failure-catalog.md)).
-- **P1**: `pg_dump` / `psql` logical backup and restore, the Step DAG executor,
-  restore verification (temporary-database row counts + column/constraint/index
-  schema comparison + `amcheck`), `bkagent backup|restore|verify`.
-- **P2**: `pg_basebackup` physical backup, `pg_verifybackup` integrity check,
-  PITR plan (recovery configuration, instance start, promote assertions,
-  failure cleanup graph), `bkagent backup --mode physical` and `bkagent pitr`.
-- **P3**: pgBackRest and WAL-G orchestration (backup / restore / verify /
-  expire / delete retain), `pgbackrest-*` and `walg-*` commands; both chains
-  verified against real clusters (see
-  [`provider-integration-2026-11-12.md`](provider-integration-2026-11-12.md)).
-  The four providers are registered under the §11 `ProviderAdapter` contract
-  (`native-logical` / `native-physical` / `pgbackrest` / `walg`);
-  `bkagent providers [--dsn …]` lists descriptors and probes tool versions and
-  the server version matrix (see [`provider-contract.md`](provider-contract.md)).
-- **P4**: GFS retention (reachability analysis, computed per target), run
-  persistence, the `catalog` / `retain` / `report` / `metrics` / `capacity` /
-  `watchdog` / `trace` / `notify-test` commands, systemd and cron templates.
-  `metrics` emits the 7 series of §12 (`bk_ticket_total`,
-  `bk_attempt_duration_seconds`, `bk_backup_bytes_total`,
-  `bk_verify_result_total`, `bk_outbox_lag_seconds`,
-  `bk_stalled_attempts_total`, `bk_rpo_attainment_ratio`), plus
-  `bk_artifacts_total`, `bk_artifact_bytes_total`, `bk_attempt_errors_total`,
-  `bk_outbox_pending` and `bk_last_artifact_timestamp_seconds`; `watchdog`
-  evaluates the P1–P4 alert ladder after reconciliation and can push to webhook
-  or SMTP. `retain --apply` only marks catalog metadata that matches the policy
-  as a tombstone (rows, paths and lineage are kept; `bytes` are not reclaimed);
-  it requires a bound dry-run digest, `--target` and `--yes`, and a production
-  target additionally needs four-eyes approval; an `asset-set --protected`
-  target is exempt as a whole and `apply` refuses it. `catalog --history` shows
-  rows including tombstones (plan-linked rows remain accessible through
-  `trace`). Byte reclamation is performed by `storage-purge` (tombstoned +
-  managed + past the grace period + no live child) and `storage-gc`
-  (unreferenced and expired objects); both default to dry-run, `--apply` must be
-  bound to the dry-run digest and `--yes`, and every entry is audited. Provider
-  repositories are still cleaned up by `pgbackrest expire` /
-  `wal-g delete retain`.
-- **P5**: dsh tool plugin (`pg_inspect` / `pg_backup` / `pg_restore` /
-  `pg_verify` / `pg_pitr` / `pg_catalog` / `pg_report` / `kb_search`), the
-  `pg-dba` preset with six skills, and an install script; tool definitions are
-  centralised in `tools.js`, and the same registry serves both the dsh plugin
-  and `bkagent-mcp` (MCP stdio), with destructive tools failing closed under
-  MCP. See [`dsh-integration.md`](dsh-integration.md).
-- **P6**: read-only web panel (`bkagent dashboard --out|--serve`): summary
-  cards, artifact timeline, verification state, execution records and filters;
-  self-contained HTML with no external assets.
+- P0：领域模型、Plan IR 校验/指纹/重基、`Executor` 端口、SQLite 控制库（Outbox / 租约与 fencing / 对账）、`bkagent inspect`。
+- P0.5：57 条故障目录、15 条本地复现、错误分类与预检规则（[`failure-catalog.md`](failure-catalog.md)）。
+- P1：`pg_dump` / `psql` 逻辑备份与恢复、Step DAG 执行器、恢复校验（临时库行数 + 列/约束/索引 schema 比对 + `amcheck`）、`bkagent backup|restore|verify`。
+- P2：`pg_basebackup` 物理备份、`pg_verifybackup` 完整性校验、PITR 计划（恢复配置、实例启动、promote 断言、失败清理图），`bkagent backup --mode physical` 与 `bkagent pitr`。
+- P3：pgBackRest 与 WAL-G 编排（备份/恢复/校验/expire/delete retain）、`pgbackrest-*` 与 `walg-*` 命令；两条链路均完成真实集群验证（见 [`provider-integration-2026-11-12.md`](provider-integration-2026-11-12.md)）。四个 provider 以 §11 `ProviderAdapter` 契约注册（`native-logical` / `native-physical` / `pgbackrest` / `walg`），`bkagent providers [--dsn …]` 列出描述符并探测工具版本与服务器版本矩阵（见 [`provider-contract.md`](provider-contract.md)）。
+- P4：GFS 保留（可达性分析，按 target 计算）、运行持久化、`catalog` / `retain` / `report` / `metrics` / `capacity` / `watchdog` / `trace` / `notify-test` 命令、systemd 与 cron 模板。`metrics` 输出 §12 的 7 条序列（`bk_ticket_total`、`bk_attempt_duration_seconds`、`bk_backup_bytes_total`、`bk_verify_result_total`、`bk_outbox_lag_seconds`、`bk_stalled_attempts_total`、`bk_rpo_attainment_ratio`），另有 `bk_artifacts_total`、`bk_artifact_bytes_total`、`bk_attempt_errors_total`、`bk_outbox_pending`、`bk_last_artifact_timestamp_seconds`；`watchdog` 在 reconcile 之后评估 P1–P4 告警阶梯并可推送到 webhook 或 SMTP。`retain --apply` 只把符合策略的 catalog 元数据标记为 tombstone（保留行、路径与 lineage，`bytes` 不回收），需绑定 dry-run digest、`--target`、`--yes`，生产 target 另需双人复核；`asset-set --protected` 的 target 整目标豁免且 apply 拒绝；`catalog --history` 可查看含 tombstone 的行（plan 关联行仍可用 `trace`）；字节回收由 `storage-purge`（tombstoned + managed + 超过宽限期 + 无 live 子节点）与 `storage-gc`（无引用且超期对象）执行，两者默认 dry-run，`--apply` 必须绑定 dry-run digest 与 `--yes`，逐条写审计；provider 仓库仍由 `pgbackrest expire` / `wal-g delete retain` 清理。
+- P5：dsh 工具插件（`pg_inspect` / `pg_backup` / `pg_restore` / `pg_verify` / `pg_pitr` / `pg_catalog` / `pg_report` / `kb_search`）、`pg-dba` Preset 与六项技能、安装脚本；工具定义集中在 `tools.js`，同一注册表同时供 dsh 插件与 `bkagent-mcp`（MCP stdio）使用，MCP 下的破坏性工具失败关闭。见 [`dsh-integration.md`](dsh-integration.md)。
+- P6：只读 Web 面板（`bkagent dashboard --out|--serve`）：汇总卡片、产物时间线、校验状态、执行记录与过滤；自包含 HTML，无外部资源。
 
-Beyond the P0–P6 milestones there is a knowledge package,
-`@backup-agent/knowledge`: SAG2 evidence retrieval (SQLite FTS5 + BM25, alias
-dictionary, per-round reranking, `primary`/`evidence` layering), pluggable
-scoring backends (`lexical` / `command` / `http`, failing closed on negotiation
-failure) and a 108-question evaluation set (R@10 50.01%). It serves document
-Q&A and troubleshooting navigation only; it does not participate in plan
-generation. See [`knowledge-baseline.md`](knowledge-baseline.md).
+此外实现了一个不属于 P0–P6 里程碑的知识包 `@backup-agent/knowledge`：SAG2 证据检索（SQLite FTS5 + BM25、别名词典、逐轮重排、`primary`/`evidence` 分层）、可插拔打分后端（`lexical` / `command` / `http`，协商失败关闭）、108 题评测集（R@10 50.01%）。它只服务文档问答与排障导航，不参与 Plan 生成。见 [`knowledge-baseline.md`](knowledge-baseline.md)。
 
-## Acceptance items
+## 验收项
 
-`pnpm test` covers 61 test files / 682 cases, and `pnpm -r typecheck` passes.
+`pnpm test` 为 61 个测试文件 / 682 个用例，`pnpm -r typecheck` 全部通过。
 
-- **E-01 to E-07, E-10**: implementation and test evidence exist. E-01
-  traceability lives in the data plane (`AssetDescriptor` + Plan/Attempt/
-  Artifact + `trace` lineage); the natural-language conclusion produced by a
-  model is not machine-verified. E-03 handles over-reach by refusing the run and
-  writing an `authorization.denied` audit event — the permission itself rests on
-  the principal's database credentials and OS identity. E-05 is recorded in
-  [`trace-drill.md`](trace-drill.md), E-04 in
-  [`injection-drill.md`](injection-drill.md) and
-  `packages/engine-postgres/test/injection.integration.test.ts`, and E-07 is
-  guarded by the MANIFEST hash checked in `pnpm verify:skills`. E-10 approvals
-  are deduplicated by OS identity: one OS user cannot satisfy four-eyes with two
-  labels.
-- **E-08**: `scripts/offline-drill.sh` covers inspect / backup / verify / report
-  / dashboard — **partially met**: the CLI has no standalone `plan` subcommand
-  (planning is embedded in each command) and the drill does not cover controlled
-  restore (see [`offline-acceptance.md`](offline-acceptance.md) § Not covered).
-- **E-09**: the real-model E2E ran successfully on 2026-11-12 (see
-  [`e2e-agent.md`](e2e-agent.md)), but it can only be run by hand via
-  `scripts/e2e-agent.mjs` — **not wired into any gate**, so it does not satisfy
-  "green before release".
+- **E-01 至 E-07、E-10**：有实现与测试证据。E-01 的可追溯性落在数据面（`AssetDescriptor` + Plan/Attempt/Artifact + `trace` 血缘），模型自然语言结论本身不做机器校验。E-03 的越权处置是「拒绝并写 `authorization.denied` 审计事件」，权限本身由 principal 的数据库凭据与操作系统身份承担。E-05 见 [`trace-drill.md`](trace-drill.md)，E-04 见 [`injection-drill.md`](injection-drill.md) 与 `packages/engine-postgres/test/injection.integration.test.ts`，E-07 由 `pnpm verify:skills` 的 MANIFEST 哈希守护。E-10 的审批按操作系统身份去重，同一 OS 用户无法用两个标签满足双人复核。
+- **E-08**：`scripts/offline-drill.sh` 覆盖 inspect / backup / verify / report / dashboard，**部分达成**——CLI 没有独立 `plan` 子命令（规划内嵌于各命令），演练也未覆盖受控恢复（[`offline-acceptance.md`](offline-acceptance.md) §Not covered）。
+- **E-09**：真实模型 E2E 有 2026-11-12 的成功记录（[`e2e-agent.md`](e2e-agent.md)），但只能手工执行 `scripts/e2e-agent.mjs`，**未接入任何发布准入检查**，因此不满足「全部通过方可发版」。
 
-## Inspecting pre-existing assets (including non-agent artifacts)
+## 巡检既有资产（含非 agent 产物）
 
-The control plane can report status and content for backups that already exist,
-but coverage depends on artifact shape and location, and scheduling is excluded.
+控制面能对已有备份做「查状态、查内容」，但覆盖范围按产物形态与位置区分，且不包含调度：
 
-| Capability | Entry point | Coverage | Limits |
+| 能力 | 入口 | 覆盖 | 限制 |
 |---|---|---|---|
-| Ledger | `catalog` (incl. `--history`), `asset-list`, `asset-rpo` | Catalog rows, tombstones, per-target VRP and RPO attainment | Reads control-database metadata only; never touches bytes |
-| Status checks | `watchdog` (cron every 5 minutes) | P1 no VRP, P2 consecutive failures, P3 latest V2+ older than 7 days, P4 capacity; can push to webhook / SMTP | Alerts only; never initiates verification |
-| Logical dump re-verification | `verify --dsn … --input <path>` | Any local custom / plain / `-Fd` directory: restored into a temporary database, then row counts + schema + `amcheck`, producing V2 | Requires a reachable target instance; non-local locations (`s3://…`, `<transport>:<path>`) are unreadable; evidence is written back only to the most recent row with an exactly identical path, and is merely reported when the artifact is not registered |
-| Registering external assets | `artifact-add --target … --provider … --kind … --path … [--parent <id>] [--verified-level V0..V3 --checksum <sha256>]` | External artifacts (historical dumps from other hosts or tools, provider repository entries) can be registered and enter the ledger and alerting | The level is **self-asserted**: `--checksum` only validates 64-hex format and is never compared against bytes; `--provider` must be one of the four registered IDs, otherwise `retain --apply` rejects the whole batch (`unknown-provider`) |
-| External provider repositories | `exec -- pgbackrest info` | Raw JSON is visible | The parser `catalogEntriesFromPgBackRestInfo` is not wired to the CLI, so repository contents do not enter the catalog |
-| Physical backups | — | `pg_verifybackup` runs once inside the `backup --mode physical --format plain` plan (V0) | No post-hoc re-verification entry point; the tar form explicitly skips verification |
-| Byte integrity | — | Upload and `verify` compute sha256 internally | No command recomputes it and compares against the catalog row; silent tampering only surfaces when a restore fails |
+| 台账 | `catalog`（含 `--history`）、`asset-list`、`asset-rpo` | 目录行、tombstone、每 target 的 VRP 与 RPO 达标情况 | 只读控制库元数据，不触字节 |
+| 状态巡检 | `watchdog`（cron 每 5 分钟） | P1 无 VRP、P2 连续失败、P3 最近 V2+ 超过 7 天、P4 容量；可推 webhook / SMTP | 只告警，不发起校验 |
+| 逻辑转储复检 | `verify --dsn … --input <路径>` | 任意本地 custom / plain / `-Fd` 目录，恢复到临时库后做行数 + schema + `amcheck`，产出 V2 | 需要可达的目标实例；非本地位置（`s3://…`、`<transport>:<path>`）不可读；证据只写回「路径完全相同」的最近一行，未入册时仅提示 |
+| 外部资产入册 | `artifact-add --target … --provider … --kind … --path … [--parent <id>] [--verified-level V0..V3 --checksum <sha256>]` | 外部产物（他机或他工具的历史转储、provider 仓库条目）可入册并纳入台账与告警 | 等级是**自证**：`--checksum` 只校验 64-hex 格式，不与字节比对；`--provider` 必须是四个已注册 ID，否则 `retain --apply` 整批拒绝（`unknown-provider`） |
+| 外部 provider 仓库 | `exec -- pgbackrest info` | 原始 JSON 可见 | 解析器 `catalogEntriesFromPgBackRestInfo` 未接 CLI，仓库内容不入目录 |
+| 物理备份 | — | `pg_verifybackup` 只在 `backup --mode physical --format plain` 的计划内执行一次（V0） | 无事后复检入口；tar 形态明确跳过校验 |
+| 字节完整性 | — | 上传与 `verify` 内部会计算 sha256 | 没有「重算并与目录记录比对」的命令，静默篡改只能在恢复失败时暴露 |
 
-Practical conclusion for non-agent artifacts: **logical dumps can be inspected**
-(`verify --input`), while **physical backups and provider repositories can only
-be registered, not verified**. `storage-gc` / `storage-purge` handle managed
-storage only; external paths are recorded as `outside-storage` and skipped, so
-nothing is deleted by mistake.
+对非 agent 产物的结论：**逻辑转储可以巡检**（`verify --input`），**物理备份与 provider 仓库只能登记、不能验证**；`storage-gc` / `storage-purge` 只处理 managed storage，外部路径记为 `outside-storage` 跳过，不会误删。
 
-## Design items not implemented
+## 未达成的设计条目
 
-- **Embedded dsh panel**: not done. P6 is a standalone read-only page, which the
-  v1.1 baseline explicitly defers.
-- **PITR window**: only an LSN-range preflight exists ("base backup consistent
-  point → last archived segment", `engine-postgres/src/pitr-window.ts`). WAL gap
-  enumeration, cross-timeline `.history` validation and intersection with
-  retention are not implemented; time / name / xid targets are decided by
-  post-restore assertions. There is also no PITR integration case against a real
-  cluster (plan §15 requires "recover to an intermediate point in time and
-  assert the data boundary"), only plan-level unit tests and manual provider
-  restores.
-- **Verification levels**: V2 really runs (schema + row counts + `amcheck`,
-  recorded as `available:false` when the extension is missing); the V3
-  business-smoke SQL case set is missing; V0 defaults to `--no-parse-wal`.
-- **State machine**: `Plan.superseded` has a migration definition but no
-  production writer; a `targetOid` change is treated as configuration drift and
-  rebased, rather than the "terminate on target identity change" required by
-  §5.4.
-- **Artifacts and storage**: directory-shaped artifacts (`pg_dump -Fd`,
-  `pg_basebackup -Fp`) cannot be uploaded to `Storage`; remote plan artifacts
-  are recorded as `<transport>:<path>` and their bytes never return to the
-  control plane; SMTP has no STARTTLS.
-- **Asset inspection is not closed-loop**: there is no `verify --artifact <id>`,
-  so artifacts on `s3` or on a remote host cannot be re-verified; physical
-  backups have no post-hoc `pg_verifybackup`; the §8 "daily sampled V2 / weekly
-  V3" schedule does not exist; there is no byte-integrity re-check command, and
-  `artifact-add` levels are self-asserted rather than verified against bytes.
-- **External repositories do not enter the catalog**: the `catalog` operation
-  for pgBackRest / WAL-G exists only in the `ProviderAdapter` contract, with no
-  corresponding CLI verb, so external repository entries can only be registered
-  by hand through `artifact-add`.
-- **Compatibility matrix**: the nightly PG14–17 × four-provider matrix is not
-  wired into CI; measured environments are PG16/17, and provider chains were
-  verified by hand.
-- **Quality gates**: statement/branch coverage, mutation score and flaky rate
-  have no tool executing them; fault injection (F-01–F-06) is limited to error
-  classification unit tests — chaos runs and state-machine model checking are
-  not done. The shared `Executor` contract suite is currently reused only by
-  `LocalExecutor` (C-02 asserts env pass-through, which conflicts with the
-  remote design that does not forward env); `ssh` and `kubectl` have only their
-  own transport cases.
-- **Credentials**: `secretRef` exists only as a target in §10 of the plan; there
-  is no corresponding type or field in the code. The implementation is a
-  child-process environment variable plus `dsnEnv` in the principal registry.
-- **P5 tool surface**: provider-style commands (`pgbackrest-*` / `walg-*` /
-  `retain` / `metrics` / `storage-*` and others) are still reachable only
-  through the CLI or `bash`; MCP has no approval channel, so restores cannot run
-  under MCP.
-- **Remote targets**: the SSH and kubectl executors and transports are verified,
-  but `10.1.31.125` does not have PostgreSQL installed yet, so the remote
-  database target and the rustfs S3 target are still blocked on environment work.
+- **dsh 内嵌面板**未做；P6 为独立只读页面（基线 v1.1 已明确后置）。
+- **PITR 窗口**只有「基础备份 consistent point → 最后归档段」的 LSN 区间预检（`engine-postgres/src/pitr-window.ts`）：WAL 缺口枚举、跨时间线 `.history` 校验、与 retention 求交集均未实现；时间/name/xid 目标由恢复后断言判定。也没有真实集群上的 PITR 集成用例（方案 §15 要求「恢复至中间时间点，断言数据边界」），只有 Plan 级单测与手工 provider 恢复。
+- **校验分级**：V2 已真实执行（schema + 行数 + `amcheck`，扩展不可用时记录 `available:false`）；V3 业务冒烟 SQL 用例集缺失；V0 默认 `--no-parse-wal`。
+- **状态机**：`Plan.superseded` 有迁移定义但无生产写入者；`targetOid` 变化按配置漂移重基，而非 §5.4 要求的「目标身份变化即终止」。
+- **产物与存储**：目录形态产物（`pg_dump -Fd`、`pg_basebackup -Fp`）不能上传 `Storage`；远端计划产物记为 `<transport>:<path>`，字节不回传控制面；SMTP 无 STARTTLS。
+- **资产巡检覆盖不全**：没有 `verify --artifact <id>`，产物落在 `s3` 或远端时无法复检；物理备份没有事后 `pg_verifybackup`；§8 的「每日抽样 V2 / 每周 V3」没有调度；没有字节完整性复检命令，`artifact-add` 的等级不校验字节（自证）。
+- **外部仓库不可入目录**：pgBackRest / WAL-G 的 `catalog` 操作只存在于 `ProviderAdapter` 契约，没有对应 CLI 动词，外部仓库的条目只能经 `artifact-add` 手工登记。
+- **兼容矩阵**：PG14–17 × 四类 provider 的夜间矩阵未接入 CI，实测环境为 PG16/17，provider 链路为手工验证。
+- **质量准入检查**：语句/分支覆盖率、变异得分、不稳定用例率没有对应工具执行；故障注入（F-01–F-06）只有错误分类单测，混沌与状态机模型检验未做。`Executor` 共享契约套件目前只由 `LocalExecutor` 复用（C-02 断言 env 透传，与远端不转发 env 的设计冲突），`ssh` / `kubectl` 只有各自的传输用例。
+- **凭据**：`secretRef` 只是方案 §10 的目标，代码中没有对应类型或字段；实际实现是子进程环境变量 + principal 注册表里的 `dsnEnv`。
+- **P5 工具面**：provider 类命令（`pgbackrest-*` / `walg-*` / `retain` / `metrics` / `storage-*` 等）仍只经 CLI 或 `bash` 调用；MCP 无审批通道，因此 MCP 下不能执行恢复。
+- **远端目标**：SSH/kubectl 执行器与传输已验证，但 10.1.31.125 尚未安装 PostgreSQL，远程数据库目标与 rustfs S3 目标仍待环境侧推进。
