@@ -1,6 +1,6 @@
 # bkagent 使用手册
 
-本手册面向在单机或远端 PostgreSQL 实例上执行备份、校验、恢复与巡检的 DBA。内容包括命令入口、门禁条件、可验证的实操示例与排障路径；设计原理与未达成条目不在本文件展开，见 [architecture.md](architecture.md) 与仓库根 README。
+本手册面向在单机或远端 PostgreSQL 实例上执行备份、校验、恢复与巡检的 DBA。内容包括命令入口、门禁条件、可验证的实操示例与排障路径；设计原理与未达成条目不在本文件展开，见 [architecture.md](architecture.md) 与 [status.md](status.md)。
 
 约定：
 
@@ -850,7 +850,7 @@ ExecStart=/usr/local/bin/bkagent backup --dsn ${BKAGENT_DSN} --database ${BKAGEN
 
 ### 附录 D：已知限制
 
-生产使用前应了解的边界，完整清单见仓库根 README 的「未达成的设计条目」：
+生产使用前应了解的边界，完整清单见 [status.md](status.md) 的「Design items not implemented」：
 
 - E-08 离线验收只覆盖 inspect / backup / verify / report / dashboard，且无独立 `plan` 子命令；E-09 真实模型 E2E 只能手工跑，未接入门禁。
 - PITR 只做 LSN 窗口预检；WAL 缺口枚举、跨时间线 `.history` 校验、与 retention 求交集均未实现，也没有真实集群的 PITR 集成用例。
