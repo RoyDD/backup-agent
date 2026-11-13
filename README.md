@@ -165,6 +165,7 @@ MCP 入口：`node packages/dsh-plugin/mcp.js`（`bin` 名 `bkagent-mcp`，默�
 
 | 主题 | 文件 |
 |---|---|
+| **使用手册**：命令地图、场景实操、门禁、排障（含截图） | [`docs/usage.md`](docs/usage.md) |
 | 架构、执行/存储/通知、授权门禁、Outbox | [`docs/architecture.md`](docs/architecture.md) |
 | §11 引擎/provider 契约与四个 provider | [`docs/provider-contract.md`](docs/provider-contract.md) |
 | dsh 插件、Preset、MCP 入口 | [`docs/dsh-integration.md`](docs/dsh-integration.md) |
