@@ -3,9 +3,25 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { DatabaseSync } from 'node:sqlite'
 
-import type { ArtifactId, AttemptId, MandateId, OutboxId, PlanId, TargetId, TicketId } from '../../domain/ids'
+import type {
+  ArtifactId,
+  AttemptId,
+  GoalId,
+  GoalStepId,
+  MandateId,
+  MemoryId,
+  OutboxId,
+  PlanId,
+  StepAttemptId,
+  TargetId,
+  TicketId,
+} from '../../domain/ids'
 import type { AssetDescriptor } from '../../domain/asset'
 import type { Plan } from '../../domain/plan'
+import type { StepAction } from '../../domain/action'
+import type { ErrorClass } from '../../domain/errors'
+import type { Goal, GoalConstraints, GoalState, GoalStep, StepState } from '../../domain/goal'
+import type { Diagnosis } from '../../domain/remediation'
 import type {
   ArtifactFilter,
   ArtifactRecord,
@@ -18,6 +34,9 @@ import type {
   ModelUsageRecord,
   ModelUsageStore,
   AttemptStore,
+  GoalStepPatch,
+  GoalStepStore,
+  GoalStore,
   LeaseRecord,
   LeaseStore,
   LineageEdgeRecord,
@@ -25,12 +44,16 @@ import type {
   LineageStore,
   MandateRecord,
   MandateStore,
+  MemoryEntry,
+  MemoryStore,
   OutboxRecord,
   OutboxStatus,
   OutboxStore,
   PlanRecord,
   PlanStore,
   Repository,
+  StepAttemptRecord,
+  StepAttemptStore,
   TicketRecord,
   TicketStore,
 } from '../../ports/repository'
@@ -165,6 +188,64 @@ interface LineageRow {
   to_kind: string
   to_id: string
   relation: string
+  created_at: string
+}
+
+interface GoalRow {
+  id: string
+  principal_id: string
+  target_id: string
+  intent: string
+  state: string
+  constraints_json: string
+  created_at: string
+  updated_at: string
+}
+
+interface GoalStepRow {
+  id: string
+  goal_id: string
+  ordinal: number
+  intent: string
+  action_json: string
+  depends_on_json: string
+  state: string
+  attempts: number
+  max_attempts: number
+  plan_id: string | null
+  approved_by: string | null
+  approved_at: string | null
+  last_error_class: string | null
+  created_at: string
+  updated_at: string
+}
+
+interface StepAttemptRow {
+  id: string
+  step_id: string
+  attempt: number
+  plan_id: string | null
+  state: string
+  exit_code: number | null
+  error_class: string | null
+  signature: string | null
+  action_json: string
+  diagnosis_json: string | null
+  started_at: string
+  finished_at: string | null
+}
+
+interface MemoryRow {
+  id: string
+  target_id: string
+  goal_id: string | null
+  step_id: string | null
+  kind: string
+  signature: string
+  action_json: string
+  outcome_json: string
+  error_class: string | null
+  success: number
   created_at: string
 }
 
@@ -330,6 +411,81 @@ function mapLineage(row: LineageRow): LineageEdgeRecord {
   }
 }
 
+function mapGoal(row: GoalRow): Goal {
+  return {
+    goalId: row.id as GoalId,
+    principalId: row.principal_id,
+    targetId: row.target_id as TargetId,
+    intent: row.intent,
+    state: row.state as GoalState,
+    constraints: JSON.parse(row.constraints_json) as GoalConstraints,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+function mapGoalStep(row: GoalStepRow): GoalStep {
+  return {
+    stepId: row.id as GoalStepId,
+    goalId: row.goal_id as GoalId,
+    ordinal: row.ordinal,
+    intent: row.intent,
+    action: JSON.parse(row.action_json) as StepAction,
+    dependsOn: JSON.parse(row.depends_on_json) as GoalStepId[],
+    state: row.state as StepState,
+    attempts: row.attempts,
+    maxAttempts: row.max_attempts,
+    planId: row.plan_id === null ? null : (row.plan_id as PlanId),
+    approvedBy: row.approved_by,
+    approvedAt: row.approved_at,
+    lastErrorClass: row.last_error_class === null ? null : (row.last_error_class as ErrorClass),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
+function mapStepAttempt(row: StepAttemptRow): StepAttemptRecord {
+  return {
+    attemptId: row.id as StepAttemptId,
+    stepId: row.step_id as GoalStepId,
+    attempt: row.attempt,
+    planId: row.plan_id === null ? null : (row.plan_id as PlanId),
+    state: row.state as StepAttemptRecord['state'],
+    exitCode: row.exit_code,
+    errorClass: row.error_class === null ? null : (row.error_class as ErrorClass),
+    signature: row.signature,
+    action: JSON.parse(row.action_json) as StepAction,
+    diagnosis: row.diagnosis_json === null ? null : (JSON.parse(row.diagnosis_json) as Diagnosis),
+    startedAt: row.started_at,
+    finishedAt: row.finished_at,
+  }
+}
+
+function mapMemory(row: MemoryRow): MemoryEntry {
+  return {
+    memoryId: row.id as MemoryId,
+    targetId: row.target_id as TargetId,
+    goalId: row.goal_id === null ? null : (row.goal_id as GoalId),
+    stepId: row.step_id === null ? null : (row.step_id as GoalStepId),
+    kind: row.kind as MemoryEntry['kind'],
+    signature: row.signature,
+    action: JSON.parse(row.action_json) as StepAction,
+    outcome: JSON.parse(row.outcome_json) as MemoryEntry['outcome'],
+    errorClass: row.error_class === null ? null : (row.error_class as ErrorClass),
+    success: row.success === 1,
+    createdAt: row.created_at,
+  }
+}
+
+/**
+ * Bounds a caller-supplied row limit. A limit is a display choice, never a
+ * correctness one, so an absurd value is clamped instead of refusing the read.
+ */
+function clampLimit(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback
+  return Math.min(500, Math.max(1, Math.trunc(value)))
+}
+
 function withSavepoint<T>(db: DatabaseSync, name: string, fn: () => T): T {
   db.exec(`SAVEPOINT ${name}`)
   try {
@@ -378,6 +534,10 @@ function createStores(db: DatabaseSync): {
   outbox: OutboxStore
   leases: LeaseStore
   lineage: LineageStore
+  goals: GoalStore
+  goalSteps: GoalStepStore
+  stepAttempts: StepAttemptStore
+  memory: MemoryStore
 } {
   const tickets: TicketStore = {
     async insert(record) {
@@ -989,7 +1149,247 @@ function createStores(db: DatabaseSync): {
     },
   }
 
-  return { tickets, mandates, plans, attempts, artifacts, assets, modelUsage, approvals, outbox, leases, lineage }
+  const goals: GoalStore = {
+    async insert(goal) {
+      // A duplicate id is a caller bug, not a conflict to resolve: let SQLite
+      // reject it so two goals cannot silently collapse into one row.
+      db.prepare(
+        `INSERT INTO goals (id, principal_id, target_id, intent, state, constraints_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        goal.goalId,
+        goal.principalId,
+        goal.targetId,
+        goal.intent,
+        goal.state,
+        JSON.stringify(goal.constraints),
+        goal.createdAt,
+        goal.updatedAt,
+      )
+    },
+    async get(goalId) {
+      const row = asOne<GoalRow>(db.prepare('SELECT * FROM goals WHERE id = ?').get(goalId))
+      return row ? mapGoal(row) : null
+    },
+    async updateState(goalId, state, now) {
+      const result = db
+        .prepare('UPDATE goals SET state = ?, updated_at = ? WHERE id = ?')
+        .run(state, now, goalId)
+      if (Number(result.changes) === 0) throw new Error(`goal not found: ${goalId}`)
+    },
+    async list(filter = {}) {
+      const clauses: string[] = []
+      const params: string[] = []
+      if (filter.state !== undefined) {
+        clauses.push('state = ?')
+        params.push(filter.state)
+      }
+      if (filter.targetId !== undefined) {
+        clauses.push('target_id = ?')
+        params.push(filter.targetId)
+      }
+      const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : ''
+      const limit = filter.limit === undefined ? '' : ` LIMIT ${clampLimit(filter.limit, 500)}`
+      return asMany<GoalRow>(
+        db
+          .prepare(`SELECT * FROM goals ${where} ORDER BY created_at DESC, rowid DESC${limit}`)
+          .all(...params),
+      ).map(mapGoal)
+    },
+  }
+
+  const goalSteps: GoalStepStore = {
+    async insert(step) {
+      // Ordinal uniqueness and the goal foreign key are enforced here, so a
+      // decomposition that repeats an ordinal or points at a missing goal
+      // fails at write time instead of producing an unrunnable plan.
+      db.prepare(
+        `INSERT INTO goal_steps (id, goal_id, ordinal, intent, action_json, depends_on_json, state, attempts,
+                                 max_attempts, plan_id, approved_by, approved_at, last_error_class,
+                                 created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        step.stepId,
+        step.goalId,
+        step.ordinal,
+        step.intent,
+        JSON.stringify(step.action),
+        JSON.stringify(step.dependsOn),
+        step.state,
+        step.attempts,
+        step.maxAttempts,
+        step.planId,
+        step.approvedBy,
+        step.approvedAt,
+        step.lastErrorClass,
+        step.createdAt,
+        step.updatedAt,
+      )
+    },
+    async get(stepId) {
+      const row = asOne<GoalStepRow>(db.prepare('SELECT * FROM goal_steps WHERE id = ?').get(stepId))
+      return row ? mapGoalStep(row) : null
+    },
+    async listByGoal(goalId) {
+      return asMany<GoalStepRow>(
+        db.prepare('SELECT * FROM goal_steps WHERE goal_id = ? ORDER BY ordinal').all(goalId),
+      ).map(mapGoalStep)
+    },
+    async update(stepId, patch: GoalStepPatch, now) {
+      // Read-merge-write: a patch names the columns it changes and every other
+      // column keeps its stored value, so a state transition cannot erase an
+      // approval or an attempt count by omission.
+      const row = asOne<GoalStepRow>(db.prepare('SELECT * FROM goal_steps WHERE id = ?').get(stepId))
+      if (!row) throw new Error('goal step not found')
+      const current = mapGoalStep(row)
+      const next = {
+        intent: patch.intent ?? current.intent,
+        action: patch.action ?? current.action,
+        dependsOn: patch.dependsOn ?? current.dependsOn,
+        state: patch.state ?? current.state,
+        attempts: patch.attempts ?? current.attempts,
+        maxAttempts: patch.maxAttempts ?? current.maxAttempts,
+        // `null` is a meaningful value here (clear the approval), so only an
+        // absent key keeps the stored one.
+        planId: patch.planId === undefined ? current.planId : patch.planId,
+        approvedBy: patch.approvedBy === undefined ? current.approvedBy : patch.approvedBy,
+        approvedAt: patch.approvedAt === undefined ? current.approvedAt : patch.approvedAt,
+        lastErrorClass:
+          patch.lastErrorClass === undefined ? current.lastErrorClass : patch.lastErrorClass,
+      }
+      db.prepare(
+        `UPDATE goal_steps
+            SET intent = ?, action_json = ?, depends_on_json = ?, state = ?, attempts = ?,
+                max_attempts = ?, plan_id = ?, approved_by = ?, approved_at = ?,
+                last_error_class = ?, updated_at = ?
+          WHERE id = ?`,
+      ).run(
+        next.intent,
+        JSON.stringify(next.action),
+        JSON.stringify(next.dependsOn),
+        next.state,
+        next.attempts,
+        next.maxAttempts,
+        next.planId,
+        next.approvedBy,
+        next.approvedAt,
+        next.lastErrorClass,
+        now,
+        stepId,
+      )
+    },
+    async deletePending(goalId) {
+      // Only `pending` steps go: a step that already ran is evidence, and a
+      // replan must not rewrite history it did not redo.
+      const result = db
+        .prepare("DELETE FROM goal_steps WHERE goal_id = ? AND state = 'pending'")
+        .run(goalId)
+      return Number(result.changes)
+    },
+  }
+
+  const stepAttempts: StepAttemptStore = {
+    async insert(record) {
+      db.prepare(
+        `INSERT INTO step_attempts (id, step_id, attempt, plan_id, state, exit_code, error_class, signature,
+                                    action_json, diagnosis_json, started_at, finished_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        record.attemptId,
+        record.stepId,
+        record.attempt,
+        record.planId,
+        record.state,
+        record.exitCode,
+        record.errorClass,
+        record.signature,
+        JSON.stringify(record.action),
+        record.diagnosis === null ? null : JSON.stringify(record.diagnosis),
+        record.startedAt,
+        record.finishedAt,
+      )
+    },
+    async get(attemptId) {
+      const row = asOne<StepAttemptRow>(
+        db.prepare('SELECT * FROM step_attempts WHERE id = ?').get(attemptId),
+      )
+      return row ? mapStepAttempt(row) : null
+    },
+    async listByStep(stepId) {
+      return asMany<StepAttemptRow>(
+        db.prepare('SELECT * FROM step_attempts WHERE step_id = ? ORDER BY attempt').all(stepId),
+      ).map(mapStepAttempt)
+    },
+    async setDiagnosis(attemptId, diagnosis) {
+      const result = db
+        .prepare('UPDATE step_attempts SET diagnosis_json = ? WHERE id = ?')
+        .run(JSON.stringify(diagnosis), attemptId)
+      if (Number(result.changes) === 0) throw new Error(`step attempt not found: ${attemptId}`)
+    },
+  }
+
+  const memory: MemoryStore = {
+    async append(entry) {
+      db.prepare(
+        `INSERT INTO memory_entries (id, target_id, goal_id, step_id, kind, signature, action_json,
+                                     outcome_json, error_class, success, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        entry.memoryId,
+        entry.targetId,
+        entry.goalId,
+        entry.stepId,
+        entry.kind,
+        entry.signature,
+        JSON.stringify(entry.action),
+        JSON.stringify(entry.outcome),
+        entry.errorClass,
+        entry.success ? 1 : 0,
+        entry.createdAt,
+      )
+    },
+    async list(filter = {}) {
+      const clauses: string[] = []
+      const params: string[] = []
+      if (filter.targetId !== undefined) {
+        clauses.push('target_id = ?')
+        params.push(filter.targetId)
+      }
+      if (filter.signature !== undefined) {
+        clauses.push('signature = ?')
+        params.push(filter.signature)
+      }
+      const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : ''
+      // Newest first: memory is read to answer "what happened last time", and
+      // the default window is deliberately small so a long history stays cheap.
+      const limit = clampLimit(filter.limit, 50)
+      return asMany<MemoryRow>(
+        db
+          .prepare(
+            `SELECT * FROM memory_entries ${where} ORDER BY created_at DESC, rowid DESC LIMIT ${limit}`,
+          )
+          .all(...params),
+      ).map(mapMemory)
+    },
+  }
+
+  return {
+    tickets,
+    mandates,
+    plans,
+    attempts,
+    artifacts,
+    assets,
+    modelUsage,
+    approvals,
+    outbox,
+    leases,
+    lineage,
+    goals,
+    goalSteps,
+    stepAttempts,
+    memory,
+  }
 }
 
 function lockStore<T extends object>(store: T, mutex: Mutex): T {
@@ -1021,6 +1421,7 @@ const MIGRATIONS: readonly string[] = [
   '009_outbox_delivery.sql',
   '010_artifact_lifecycle.sql',
   '011_approval_approver_os.sql',
+  '012_goals.sql',
 ]
 
 function migrationPath(name: string): string {
@@ -1114,6 +1515,10 @@ export async function createSqliteRepository(
     outbox: lockStore(stores.outbox, mutex),
     leases: lockStore(stores.leases, mutex),
     lineage: lockStore(stores.lineage, mutex),
+    goals: lockStore(stores.goals, mutex),
+    goalSteps: lockStore(stores.goalSteps, mutex),
+    stepAttempts: lockStore(stores.stepAttempts, mutex),
+    memory: lockStore(stores.memory, mutex),
     close: () => mutex.run(() => db.close()),
   }
 }

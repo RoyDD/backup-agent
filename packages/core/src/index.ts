@@ -8,6 +8,9 @@ export * from './domain/model-policy'
 export * from './domain/plan'
 export * from './domain/transport'
 export * from './domain/state'
+export * from './domain/action'
+export * from './domain/goal'
+export * from './domain/remediation'
 
 export * from './connection'
 

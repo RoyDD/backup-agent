@@ -1,8 +1,24 @@
-import type { ArtifactId, AttemptId, MandateId, OutboxId, PlanId, TargetId, TicketId } from '../domain/ids'
+import type {
+  ArtifactId,
+  AttemptId,
+  GoalId,
+  GoalStepId,
+  MandateId,
+  MemoryId,
+  OutboxId,
+  PlanId,
+  StepAttemptId,
+  TargetId,
+  TicketId,
+} from '../domain/ids'
 import type { AssetDescriptor } from '../domain/asset'
 import type { Plan } from '../domain/plan'
 import type { RiskLevel } from '../domain/risk'
 import type { AttemptState, PlanState, TicketState } from '../domain/state'
+import type { StepAction } from '../domain/action'
+import type { ErrorClass } from '../domain/errors'
+import type { Goal, GoalState, GoalStep, StepState } from '../domain/goal'
+import type { Diagnosis } from '../domain/remediation'
 
 export interface TicketRecord {
   id: TicketId
@@ -378,6 +394,90 @@ export interface LineageStore {
   listFor(nodeKind: LineageNodeKind, nodeId: string): Promise<LineageEdgeRecord[]>
 }
 
+export interface StepAttemptRecord {
+  readonly attemptId: StepAttemptId
+  readonly stepId: GoalStepId
+  /** 1-based; unique per step. */
+  readonly attempt: number
+  readonly planId: PlanId | null
+  readonly state: 'running' | 'succeeded' | 'failed' | 'lease-lost'
+  readonly exitCode: number | null
+  readonly errorClass: ErrorClass | null
+  /** Stable failure signature from executor/classify.ts; memory keys on it. */
+  readonly signature: string | null
+  /** Redacted with redactAction() before it is stored. */
+  readonly action: StepAction
+  readonly diagnosis: Diagnosis | null
+  readonly startedAt: string
+  readonly finishedAt: string | null
+}
+
+export interface MemoryOutcome {
+  readonly command: string
+  readonly state: string
+  readonly exitCode: number | null
+  readonly error: string | null
+}
+
+export interface MemoryEntry {
+  readonly memoryId: MemoryId
+  readonly targetId: TargetId
+  readonly goalId: GoalId | null
+  readonly stepId: GoalStepId | null
+  readonly kind: 'outcome' | 'lesson'
+  readonly signature: string
+  /** Redacted with redactAction() before it is stored. */
+  readonly action: StepAction
+  readonly outcome: MemoryOutcome
+  readonly errorClass: ErrorClass | null
+  readonly success: boolean
+  readonly createdAt: string
+}
+
+export interface GoalStore {
+  insert(goal: Goal): Promise<void>
+  get(goalId: GoalId): Promise<Goal | null>
+  updateState(goalId: GoalId, state: GoalState, now: string): Promise<void>
+  list(filter?: { state?: GoalState; targetId?: TargetId; limit?: number }): Promise<Goal[]>
+}
+
+export interface GoalStepPatch {
+  state?: StepState
+  attempts?: number
+  planId?: PlanId | null
+  approvedBy?: string | null
+  approvedAt?: string | null
+  lastErrorClass?: ErrorClass | null
+  action?: StepAction
+  intent?: string
+  dependsOn?: readonly GoalStepId[]
+  maxAttempts?: number
+}
+
+export interface GoalStepStore {
+  insert(step: GoalStep): Promise<void>
+  get(stepId: GoalStepId): Promise<GoalStep | null>
+  /** Ordered by ordinal. */
+  listByGoal(goalId: GoalId): Promise<GoalStep[]>
+  update(stepId: GoalStepId, patch: GoalStepPatch, now: string): Promise<void>
+  /** Deletes every step of the goal that is still `pending`, for a replan. */
+  deletePending(goalId: GoalId): Promise<number>
+}
+
+export interface StepAttemptStore {
+  insert(record: StepAttemptRecord): Promise<void>
+  get(attemptId: StepAttemptId): Promise<StepAttemptRecord | null>
+  /** Ordered by attempt number. */
+  listByStep(stepId: GoalStepId): Promise<StepAttemptRecord[]>
+  setDiagnosis(attemptId: StepAttemptId, diagnosis: Diagnosis): Promise<void>
+}
+
+export interface MemoryStore {
+  append(entry: MemoryEntry): Promise<void>
+  /** Newest first. */
+  list(filter?: { targetId?: TargetId; signature?: string; limit?: number }): Promise<MemoryEntry[]>
+}
+
 export interface Repository {
   migrate(): Promise<void>
   transaction<T>(fn: (tx: Repository) => Promise<T>): Promise<T>
@@ -392,5 +492,9 @@ export interface Repository {
   outbox: OutboxStore
   leases: LeaseStore
   lineage: LineageStore
+  goals: GoalStore
+  goalSteps: GoalStepStore
+  stepAttempts: StepAttemptStore
+  memory: MemoryStore
   close(): Promise<void>
 }

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { classifyRunResult, extractSqlState } from '../../src/executor/classify'
+import {
+  classifyRunResult,
+  classifyStepFailure,
+  extractSqlState,
+  failureSignature,
+} from '../../src/executor/classify'
 
 const failure = (stderr: string, exitCode = 1): Parameters<typeof classifyRunResult>[0] => ({
   timedOut: false,
@@ -62,5 +67,65 @@ describe('classifyRunResult — catalog signatures', () => {
     expect(
       classifyRunResult({ timedOut: false, signal: 'SIGTERM', exitCode: -1, stderr: '' }),
     ).toBe('manual')
+  })
+})
+
+describe('failureSignature', () => {
+  it('names the catalogued signature', () => {
+    expect(failureSignature(failure('FATAL:  password authentication failed for user "postgres"'))).toBe(
+      'auth:password',
+    )
+    expect(failureSignature(failure('ERROR: relation "x" does not exist SQL state: 42P01'))).toBe(
+      'sqlstate:42P01',
+    )
+    expect(failureSignature(failure('pg_dump: error: could not connect'))).toBe('connect:refused')
+  })
+
+  it('falls back to the exit code when nothing matches', () => {
+    expect(failureSignature(failure('something unexpected', 7))).toBe('exit:7')
+    expect(failureSignature({ timedOut: true, signal: null, exitCode: -1, stderr: '' })).toBe(
+      'timeout',
+    )
+  })
+
+  it('is stable for the same failure and free of volatile detail', () => {
+    const a = failureSignature(failure('FATAL:  password authentication failed for user "a"'))
+    const b = failureSignature(failure('FATAL:  password authentication failed for user "b"'))
+    expect(a).toBe(b)
+    expect(a).not.toContain('"a"')
+  })
+})
+
+describe('classifyStepFailure', () => {
+  it('lets a recognised signature win over the CLI exit code', () => {
+    // The CLI reports every connection problem as exit 3, but a rejected
+    // password is a human decision, not a transient fault.
+    const classified = classifyStepFailure(
+      failure('bkagent: CONNECT_FAILED: FATAL:  password authentication failed for user "postgres"', 3),
+    )
+    expect(classified).toEqual({ errorClass: 'manual', signature: 'auth:password' })
+  })
+
+  it('treats a bare exit 3 as a transient connection failure', () => {
+    expect(classifyStepFailure(failure('bkagent: something went wrong', 3))).toEqual({
+      errorClass: 'transient',
+      signature: 'connect:refused',
+    })
+  })
+
+  it('treats exit 2 as a wrong action and exit 4 as a rejected plan', () => {
+    expect(classifyStepFailure(failure('', 2)).signature).toBe('usage:invalid-action')
+    expect(classifyStepFailure(failure('', 4))).toEqual({
+      errorClass: 'manual',
+      signature: 'plan:rejected',
+    })
+  })
+
+  it('keeps a catalogued permanent failure permanent at exit 1', () => {
+    const classified = classifyStepFailure(
+      failure('pg_dump: error: FATAL:  database "app" does not exist', 1),
+    )
+    expect(classified.errorClass).toBe('permanent')
+    expect(classified.signature).toBe('schema:database-missing')
   })
 })
