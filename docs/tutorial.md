@@ -577,6 +577,17 @@ flowchart TD
 | 审批失败不产生 `replan` | `approval:required` 的候选集只有 `escalate`，否则「自我修正」会变成绕过双人复核换一个破坏性动作 |
 | 凭据不进动作 | capability grammar 直接拒绝携带口令的 `--dsn`：动作会持久化并重放，口令必须由 `BKAGENT_DSN` / `.pgpass` / peer / GSSAPI 提供 |
 
+`goal run` 与 `goal remediate` 的 JSON 载荷带 `hint`，取值封闭为四个。它与 `next` 不是同一件事：`next` 由调度器给出（当前是否可派发步骤），`hint` 由目标与步骤状态给出（本轮应当做什么），两者不一致时以 `hint` 为准。
+
+| hint | 含义 | 允许的动作 |
+|---|---|---|
+| `run_step` | 仍有可运行步骤 | 再次 `goal run` |
+| `remediate` | 存在失败步骤且候选集开放 | `goal remediate`，只能选候选集内的处置 |
+| `await_approval` | 下一个可运行步骤是未审批的破坏性动作 | 请人在 CLI 执行 `goal approve-step`，不得改用其它动作绕行 |
+| `done` | 目标已到终态或已转人工 | 停止并汇总 |
+
+`hint` 由持久状态现算、不入库，因此不会与步骤状态不一致；`failed` 目标同样返回 `done`，因为 `escalate` 之后的决定属于人。
+
 一次完整闭环，用一个目标串起前面几章的命令（第 4 步为破坏性动作）：
 
 ```sh
@@ -614,7 +625,7 @@ sequenceDiagram
 
 ![goal run 停在审批](assets/tutorial/14-goal-approval.png)
 
-下列输出为节选：前三步均为 `succeeded`，此处只保留第一条。
+下列输出为节选：前三步均为 `succeeded`，此处只保留第一条。截图早于 `hint` 字段加入，下方 JSON 为当前输出。
 
 ```json
 {
@@ -629,7 +640,8 @@ sequenceDiagram
     "requiresHuman": true
   },
   "progress": { "total": 4, "succeeded": 3, "failed": 0, "ready": 1 },
-  "next": { "kind": "run", "stepId": "stp_a603ed48-…" }
+  "next": { "kind": "run", "stepId": "stp_a603ed48-…" },
+  "hint": "await_approval"
 }
 ```
 
@@ -643,7 +655,8 @@ sequenceDiagram
   "state": "succeeded",
   "executed": [{ "stepId": "stp_a603ed48-…", "attempt": 2, "exitCode": 0, "state": "succeeded" }],
   "progress": { "total": 4, "succeeded": 4, "failed": 0, "abandoned": 0 },
-  "next": { "kind": "done", "failed": false }
+  "next": { "kind": "done", "failed": false },
+  "hint": "done"
 }
 ```
 
@@ -661,9 +674,11 @@ bkagent memory search --db .bkagent/control.db --target 127.0.0.1:5432/<db> --li
 | 需要人 | 人 | `escalate` / `abandon`；`approval:required` 只允许 `escalate` |
 | 进程崩溃留下 `running` 步骤 | 核心 | `goal run` 启动时以签名 `stalled` 记一次失败尝试，不猜副作用是否已发生 |
 
-一次实际的 `replan`（本次执行）：第 2 步把库名写成不存在的 `bk_missing`，`goal run` 以 `errorClass: permanent`、`signature: schema:database-missing`（退出码 1）失败；诊断给出的候选为 `replan`（`requiresAction: true`）与 `escalate`。执行 `goal remediate --kind replan --action-json …` 后，该步骤回到 `ready`、目标回到 `planned`，再次 `goal run` 成功（`attempt: 2`）。这说明「自我修正」只替换动作，不改变门禁与历史；同时 `replan` 会清空该步骤已有的审批记录，替换后的破坏性动作须重新执行 `goal approve-step`。
+一次实际的 `replan`（本次执行）：第 2 步把库名写成不存在的 `bk_missing`，`goal run` 以 `errorClass: permanent`、`signature: schema:database-missing`（退出码 1）失败；诊断给出的候选为 `replan`（`requiresAction: true`）与 `escalate`。执行 `goal remediate --kind replan --action-json …` 后，该步骤回到 `ready`、目标回到 `planned`，返回 `hint: run_step`，再次 `goal run` 成功（`attempt: 2`）。这说明「自我修正」只替换动作，不改变门禁与历史；同时 `replan` 会清空该步骤已有的审批记录，替换后的破坏性动作须重新执行 `goal approve-step`。
 
-dsh 侧对应四个工具：`bk_goal`（open / plan / next / status / diagnose）、`bk_step_run`、`bk_remediate`、`bk_recall`。**审批刻意不做成工具**：MCP 与模型都无法自行放行破坏性步骤，只能在 CLI 执行 `bkagent goal approve-step`。
+dsh 侧对应四个工具：`bk_goal`（open / plan / next / status / diagnose）、`bk_step_run`、`bk_remediate`、`bk_recall`。**审批刻意不做成工具**：MCP 与模型都无法自行放行破坏性步骤，只能在 CLI 执行 `bkagent goal approve-step`。闭环行为契约写在 `presets/pg-dba/skills/goal-loop/SKILL.md`，由 `pnpm verify:skills` 的 MANIFEST 哈希守护；`bk_step_run` 与 `bk_remediate` 在失败与被拒时仍返回诊断或 `refused` 载荷，并附带 `exitCode`。
+
+这套组合的等级是 **L1 受监督智能体**，判定尺子与证据链见 [agent-loop.md](agent-loop.md) §9。模型侧行为由决策层回放守住：`packages/dsh-plugin/test/goal-replay.test.js` 以固定决策序列经同一工具定义驱动真实子进程与真实控制库，断言 `hint` 的四个取值。
 
 未做且不应描述为已实现：多智能体协作、记忆的向量检索、自由 DAG 重写、目标级并发；真实模型驱动这条闭环的端到端验收（E-09）仍未纳入发布准入检查。
 
@@ -750,7 +765,7 @@ bkagent memory search --target 127.0.0.1:5432/<db>
 |---|---|
 | `inspect`、`providers`、`asset-set`、`backup --mode logical`、`verify`、`catalog`、`asset-rpo`、`report`、`metrics`、`restore`（含三次门禁拒绝与一次通过）、`approve`、`approvals`、`watchdog`、`dashboard --out` | 在本地 PostgreSQL 16.15 上实际执行，输出为真实回显 |
 | dsh 0.2.2-rc.4 安装、插件挂载与 `pg-dba` 预设 | 已执行：`--dump-config` 出现 `preset-pg-dba`，设置页显示「自定义 / PostgreSQL 备份恢复」且无加载失败；未用模型实际发起一次会话 |
-| 智能体闭环：`goal add` / `next` / `run` / `diagnose` / `remediate` / `approve-step` / `show`、`memory search` | 在本地 PostgreSQL 16.15 上实际执行：4 步目标先停在 `approval:required`（退出码 1），审批后 `succeeded`；另一次目标以 `permanent` / `schema:database-missing` 失败，`replan` 后 `succeeded`（`attempt: 2`）；`memory search` 返回对应签名条目。**未经模型驱动**，E-09 未纳入准入检查 |
+| 智能体闭环：`goal add` / `next` / `run` / `diagnose` / `remediate` / `approve-step` / `show`、`memory search` | 在本地 PostgreSQL 16.15 上实际执行：4 步目标先停在 `approval:required`（退出码 1），审批后 `succeeded`；另一次目标以 `permanent` / `schema:database-missing` 失败，`replan` 后 `succeeded`（`attempt: 2`）；`memory search` 返回对应签名条目。决策层回放（`packages/dsh-plugin/test/goal-replay.test.js`）已在 `pnpm test` 内执行并通过。**未经模型驱动**，E-09 未纳入发布准入 |
 | 双人复核的**通过态** | 未演示：需要第二个操作系统用户执行 `approve`，本教程只展示 `distinct: 1` 的拒绝与自审被忽略 |
 | `--transport ssh` / `--transport kubectl`、物理备份、PITR、`pgbackrest-*`、`walg-*`、`retain`、MCP 入口 | 未执行，只给入口与前置条件 |
 | V3 校验等级 | 未实现 |

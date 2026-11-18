@@ -43,6 +43,7 @@ Goal        目标：操作者的原话 + 约束（步数、尝试预算、是�
 4. **封闭集。** `diagnose()` 返回候选集，`decideRemediation()` 拒绝集合外的选择。模型可以改主意，不能改规则。
 5. **凭据不进动作，也不入库。** capability grammar 直接拒绝携带口令的 `--dsn`：动作会被持久化并在之后重放，而重放读到的是控制库里的那一份，所以口令必须走 `BKAGENT_DSN` / `.pgpass` / peer / GSSAPI。`redactAction()` 作为第二道防线保留，覆盖其它形如凭据的值。
 6. **失败关闭。** 依赖 id 不存在、动作不合法、目标状态不允许迁移，一律拒绝而不是降级。
+7. **下一步提示由核心计算。** `hint`（`run_step` / `remediate` / `await_approval` / `done`）由目标与步骤状态现算，不入库；模型只能在这个封闭集内行动，`await_approval` 是硬约束，其余为提示。详见 §9.3。
 
 ## 4. 数据模型（migration `012_goals.sql`）
 
@@ -74,7 +75,7 @@ bkagent goal remediate --db <path> --step <id> --kind retry|replan|escalate|aban
 bkagent memory search --db <path> [--target <id>] [--signature <s>] [--query <text>] [--limit N]
 ```
 
-全部命令默认输出 JSON，`--format text` 输出可读行；退出码 `0` 成功、`1` 目标/步骤失败或需要审批、`2` 用法、`4` 拆解被拒 / 修复被拒 / 对象不存在。
+全部命令默认输出 JSON，`--format text` 输出可读行；退出码 `0` 成功、`1` 目标/步骤失败或需要审批、`2` 用法、`4` 拆解被拒 / 修复被拒 / 对象不存在。`goal run` 与 `goal remediate` 的载荷带 `hint`，见 §9.3。
 
 `goal add --steps-json` 与 `goal plan --steps-json` 接受模型给出的拆解，校验后持久化，并返回**可运行顺序与相关记忆**——记忆在这里第一次真正参与规划，而不是事后查日志。
 
@@ -111,7 +112,55 @@ bkagent memory search --db <path> [--target <id>] [--signature <s>] [--query <te
 - **租约与 fencing 不变。** 每个步骤各自取租约，步骤之间不持有长事务。
 - **Outbox 不变。** 每次内层运行仍写 `audit.run`；目标层只额外写自己的四张表。
 
-## 9. v1 边界
+## 9. 智能体等级与判定
+
+### 9.1 判定尺子
+
+| 等级 | 判据 |
+|---|---|
+| L0 工具调用 | 模型选择工具，流程由人给定；没有持久目标，会话结束即丢失意图 |
+| L1 受监督闭环 | 持久目标、自定计划、失败诊断与修复选择、结果回流记忆；破坏性动作的授权点由人掌握 |
+| L2 自主 | 自触发、自愈、无人工授权路径，可无人值守运行到终态 |
+
+本项目声称的等级是 **L1**，且对外必须写作「受监督智能体」。理由不是措辞偏好：破坏性步骤的 CLI 外审批是 L1 的构成要件（§3 第 2–3 条），而 `approval:required` 的诊断候选集只有 `escalate`，因此这条闭环在结构上不存在绕过授权的修复路径。据此，`自主智能体`、`无人值守` 不适用于本项目，文档与对外描述均不得使用。
+
+判定对象是系统整体：dsh 宿主（循环与模型）+ `@backup-agent/dsh-plugin`（工具面）+ `@backup-agent/core`（裁决与执行）。`bkagent` 单独运行是确定性执行器，不是智能体；把二进制本身称为智能体属于错误表述。
+
+### 9.2 四条判据与当前证据
+
+| 判据 | 实现与证据 | 缺口 |
+|---|---|---|
+| 目标持久化 | migration `012_goals.sql` 四张表；`goal add` 写入意图与约束 | — |
+| 自定计划 | `validateDecomposition` 校验模型给出的拆解，核心不发明步骤；`nextRunnable` 决定可运行顺序 | 依赖只能指向更早步骤，属顺序图而非自由 DAG |
+| 失败诊断与修复选择 | `diagnose` 生成封闭候选集，`decideRemediation` 拒绝集合外的选择，`autoRemediation` 只放行 `retry` | — |
+| 结果回流记忆 | 每个终态步骤写 `memory_entries`，`recall()` 确定性检索，`goal plan` 返回 `prior` | 无向量检索与语义聚类 |
+
+模型侧行为的证据：`packages/dsh-plugin/test/goal-replay.test.js` 以固定决策序列经工具面驱动真实子进程、真实控制库与真实 PostgreSQL，覆盖成功、`permanent` 失败后 `replan`、未审批破坏性步骤三类路径并断言 `hint`。该用例验证的是闭环契约与工具面，**不验证模型是否会做出这些决策**；后者仍只有 `E-09` 的手工记录。
+
+### 9.3 next 与 hint
+
+`next` 是调度器的结论：当前是否可派发步骤（`run` / `blocked` / `done` / `empty` / `waiting`）。它不适合单独作为智能体的下一步依据，因为它无法表达「失败步骤等待修复」与「破坏性步骤等待审批」。`hint` 补齐这个判断，取值封闭为四个：
+
+| hint | 条件 | 允许的动作 |
+|---|---|---|
+| `run_step` | 存在可运行且无需审批的步骤 | 再次 `bk_step_run` |
+| `remediate` | 存在 `failed` 步骤且候选集开放 | `bk_remediate`，只能选候选集内的处置 |
+| `await_approval` | 下一个可运行步骤是未审批的破坏性动作 | 请人在 CLI 执行 `goal approve-step`；不得改用其它动作绕行 |
+| `done` | 目标处于 `succeeded` / `failed` / `abandoned`，或已无动作可做 | 停止并汇总 |
+
+优先级见 `packages/core/src/ops/goal-plan.ts` 的 `agentHint`：目标终态优先于一切，`remediate` 优先于 `await_approval` 与 `run_step`，其余按调度器结论。`hint` 由持久状态现算，不入库，因此不会与步骤状态不一致。`failed` 目标也返回 `done`：`escalate` 之后的决定属于人，继续提示修复会把「转人工」降级为建议。
+
+### 9.4 工具面的失败载荷
+
+`goal run` 与 `goal remediate` 在失败与被拒时仍向 stdout 写入决定（诊断与候选集、`refused` 原因），并以非零码退出。工具解析器原先在非零退出时丢弃 stdout，等于把候选集换成一句错误文本；因此这两个定义标注 `tolerateFailure`，解析器保留载荷并附加 `exitCode`。其余工具维持「非零即异常」。
+
+### 9.5 证据与指标
+
+- 准入检查：`pnpm test` 内的决策层回放，要求先执行 `pnpm build:cli`，并需要本地 PostgreSQL。前置条件缺失时用例以 SKIP 报告，不计为 PASS。
+- 发版前：真实模型经 `dsh headless --json` 运行，断言 `tool_call` 序列；使用独立 `DSH_HOME`，不改动 `~/.dsh`。
+- 自主完成率：分母为进入 `planned` 的目标，分子为未经人工 `remediate` / `escalate` 即到达 `succeeded` 的目标。样本少于 30 条时只报绝对条数与失败归因，不报百分比。
+
+## 10. v1 边界
 
 未做，且不应被描述为已实现：
 
@@ -119,4 +168,4 @@ bkagent memory search --db <path> [--target <id>] [--signature <s>] [--query <te
 - 记忆的向量检索或语义聚类；
 - 自由 DAG 重写（`replan` 只原地替换动作）；
 - 目标级并发（同一目标串行执行）；
-- E-09 真实模型 E2E 仍未进入发布准入检查，新增的工具轨迹也没有回归门禁——这是当前最大的缺口。
+- E-09 真实模型 E2E 仍未进入发布准入检查。决策层回放已进入 `pnpm test`（§9.5），但「模型是否按契约决策」仍无回归门禁——这是当前最大的缺口。

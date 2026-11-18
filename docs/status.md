@@ -12,19 +12,20 @@ P0–P6 里程碑均已完成：
 - P2：`pg_basebackup` 物理备份、`pg_verifybackup` 完整性校验、PITR 计划（恢复配置、实例启动、promote 断言、失败清理图），`bkagent backup --mode physical` 与 `bkagent pitr`。
 - P3：pgBackRest 与 WAL-G 编排（备份/恢复/校验/expire/delete retain）、`pgbackrest-*` 与 `walg-*` 命令；两条链路均完成真实集群验证（见 [`provider-integration-2026-11-12.md`](provider-integration-2026-11-12.md)）。四个 provider 以 §11 `ProviderAdapter` 契约注册（`native-logical` / `native-physical` / `pgbackrest` / `walg`），`bkagent providers [--dsn …]` 列出描述符并探测工具版本与服务器版本矩阵（见 [`provider-contract.md`](provider-contract.md)）。
 - P4：GFS 保留（可达性分析，按 target 计算）、运行持久化、`catalog` / `retain` / `report` / `metrics` / `capacity` / `watchdog` / `trace` / `notify-test` 命令、systemd 与 cron 模板。`metrics` 输出 §12 的 7 条序列（`bk_ticket_total`、`bk_attempt_duration_seconds`、`bk_backup_bytes_total`、`bk_verify_result_total`、`bk_outbox_lag_seconds`、`bk_stalled_attempts_total`、`bk_rpo_attainment_ratio`），另有 `bk_artifacts_total`、`bk_artifact_bytes_total`、`bk_attempt_errors_total`、`bk_outbox_pending`、`bk_last_artifact_timestamp_seconds`；`watchdog` 在 reconcile 之后评估 P1–P4 告警阶梯并可推送到 webhook 或 SMTP。`retain --apply` 只把符合策略的 catalog 元数据标记为 tombstone（保留行、路径与 lineage，`bytes` 不回收），需绑定 dry-run digest、`--target`、`--yes`，生产 target 另需双人复核；`asset-set --protected` 的 target 整目标豁免且 apply 拒绝；`catalog --history` 可查看含 tombstone 的行（plan 关联行仍可用 `trace`）；字节回收由 `storage-purge`（tombstoned + managed + 超过宽限期 + 无 live 子节点）与 `storage-gc`（无引用且超期对象）执行，两者默认 dry-run，`--apply` 必须绑定 dry-run digest 与 `--yes`，逐条写审计；provider 仓库仍由 `pgbackrest expire` / `wal-g delete retain` 清理。
-- P5：dsh 工具插件（`pg_inspect` / `pg_backup` / `pg_restore` / `pg_verify` / `pg_pitr` / `pg_catalog` / `pg_report` / `kb_search`）、`pg-dba` Preset 与六项技能、安装脚本；工具定义集中在 `tools.js`，同一注册表同时供 dsh 插件与 `bkagent-mcp`（MCP stdio）使用，MCP 下的破坏性工具失败关闭。见 [`dsh-integration.md`](dsh-integration.md)。同一注册表另暴露目标/记忆闭环的四个工具（`bk_goal` / `bk_step_run` / `bk_remediate` / `bk_recall`）：拆解、进度与记忆落控制库，步骤审批只能在 CLI 侧由人工完成，见 [`agent-loop.md`](agent-loop.md)。
+- P5：dsh 工具插件（`pg_inspect` / `pg_backup` / `pg_restore` / `pg_verify` / `pg_pitr` / `pg_catalog` / `pg_report` / `kb_search`）、`pg-dba` Preset 与六项技能、安装脚本；工具定义集中在 `tools.js`，同一注册表同时供 dsh 插件与 `bkagent-mcp`（MCP stdio）使用，MCP 下的破坏性工具失败关闭。见 [`dsh-integration.md`](dsh-integration.md)。同一注册表另暴露目标/记忆闭环的四个工具（`bk_goal` / `bk_step_run` / `bk_remediate` / `bk_recall`）：拆解、进度与记忆落控制库，步骤审批只能在 CLI 侧由人工完成，见 [`agent-loop.md`](agent-loop.md)；闭环行为契约由 `presets/pg-dba/skills/goal-loop/SKILL.md` 承载，受 `pnpm verify:skills` 哈希守护。
 - P6：只读 Web 面板（`bkagent dashboard --out|--serve`）：汇总卡片、产物时间线、校验状态、执行记录与过滤；自包含 HTML，无外部资源。
 
 此外实现了一个不属于 P0–P6 里程碑的知识包 `@backup-agent/knowledge`：SAG2 证据检索（SQLite FTS5 + BM25、别名词典、逐轮重排、`primary`/`evidence` 分层）、可插拔打分后端（`lexical` / `command` / `http`，协商失败关闭）、108 题评测集（R@10 49.08%）。它只服务文档问答与排障导航，不参与 Plan 生成。见 [`knowledge-baseline.md`](knowledge-baseline.md)。
 
 ## 验收项
 
-`pnpm test` 为 70 个测试文件 / 837 个用例，`pnpm -r typecheck` 全部通过。
+`pnpm test` 为 71 个测试文件 / 852 个用例，`pnpm -r typecheck` 全部通过。
 
 - **E-01 至 E-07、E-10**：有实现与测试证据。E-01 的可追溯性落在数据面（`AssetDescriptor` + Plan/Attempt/Artifact + `trace` 血缘），模型自然语言结论本身不做机器校验。E-03 的越权处置是「拒绝并写 `authorization.denied` 审计事件」，权限本身由 principal 的数据库凭据与操作系统身份承担。E-05 见 [`trace-drill.md`](trace-drill.md)，E-04 见 [`injection-drill.md`](injection-drill.md) 与 `packages/engine-postgres/test/injection.integration.test.ts`，E-07 由 `pnpm verify:skills` 的 MANIFEST 哈希守护。E-10 的审批按操作系统身份去重，同一 OS 用户无法用两个标签满足双人复核。
 - **E-08**：`scripts/offline-drill.sh` 覆盖 inspect / backup / verify / report / dashboard，**部分达成**——单命令没有独立 `plan` 子命令（规划内嵌于各命令；多步规划由 `goal plan` 持久化，见 [`agent-loop.md`](agent-loop.md)），演练也未覆盖受控恢复与目标闭环（[`offline-acceptance.md`](offline-acceptance.md) §Not covered）。
-- **E-09**：真实模型 E2E 有 2026-11-12 的成功记录（[`e2e-agent.md`](e2e-agent.md)），但只能手工执行 `scripts/e2e-agent.mjs`，**未接入任何发布准入检查**，因此不满足「全部通过方可发版」。
-- **闭环（Goal/Step/Action/Memory）**：有单测与针对真实 PostgreSQL 的集成用例（`packages/cli/test/goal.integration.test.ts` 覆盖成功路径、permanent 失败→`replan`→成功、未审批破坏性步骤被拒三条路径），`dist/bkagent.mjs` 与 MCP 入口也已手工验证。但**没有**由真实模型驱动这条闭环的 E2E；E-09 仍只覆盖单命令轨迹，闭环的模型侧行为没有回归门禁。
+- **E-09**：真实模型 E2E 有 2026-11-12 的成功记录（[`e2e-agent.md`](e2e-agent.md)），但只能手工执行 `scripts/e2e-agent.mjs`，**未满足发布准入**。计划中的形态是两层：`pnpm test` 内的决策层回放已就位（见下一条），发版前再执行一次真实模型运行并阻断发版；第二层尚未接入。
+- **智能体等级：L1 受监督**（判定尺子与证据链见 [`agent-loop.md`](agent-loop.md) §9）。四条判据均有实现与测试证据；模型侧行为由决策层回放守住工具面契约，证据用例为 `packages/dsh-plugin/test/goal-replay.test.js`（要求先 `pnpm build:cli`，需要本地 PostgreSQL，前置缺失时 SKIP 不计 PASS）。据此可以称「受监督智能体」，「自主智能体」「无人值守」不适用。
+- **闭环（Goal/Step/Action/Memory）**：有单测与针对真实 PostgreSQL 的集成用例（`packages/cli/test/goal.integration.test.ts` 覆盖成功路径、permanent 失败→`replan`→成功、未审批破坏性步骤被拒三条路径），`dist/bkagent.mjs` 与 MCP 入口也已手工验证。决策层回放（`packages/dsh-plugin/test/goal-replay.test.js`）经同一工具定义驱动真实子进程，断言 `hint` 的 `done` / `remediate` / `run_step` / `await_approval`。但**没有**由真实模型驱动这条闭环的 E2E；闭环的模型侧行为仍无回归门禁。
 
 ## 巡检既有资产（含非 agent 产物）
 

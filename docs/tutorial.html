@@ -663,6 +663,15 @@ dsh --profile web --no-open                                # 设置 → Agent �
 <tr><td>审批失败不产生 <code>replan</code></td><td><code>approval:required</code> 的候选集只有 <code>escalate</code>，否则「自我修正」会变成绕过双人复核换一个破坏性动作</td></tr>
 <tr><td>凭据不进动作</td><td>capability grammar 直接拒绝携带口令的 <code>--dsn</code>：动作会持久化并重放，口令必须由 <code>BKAGENT_DSN</code> / <code>.pgpass</code> / peer / GSSAPI 提供</td></tr></tbody>
 </table></div>
+<p><code>goal run</code> 与 <code>goal remediate</code> 的 JSON 载荷带 <code>hint</code>，取值封闭为四个。它与 <code>next</code> 不是同一件事：<code>next</code> 由调度器给出（当前是否可派发步骤），<code>hint</code> 由目标与步骤状态给出（本轮应当做什么），两者不一致时以 <code>hint</code> 为准。</p>
+<div class="tw"><table>
+<thead><tr><th>hint</th><th>含义</th><th>允许的动作</th></tr></thead>
+<tbody><tr><td><code>run_step</code></td><td>仍有可运行步骤</td><td>再次 <code>goal run</code></td></tr>
+<tr><td><code>remediate</code></td><td>存在失败步骤且候选集开放</td><td><code>goal remediate</code>，只能选候选集内的处置</td></tr>
+<tr><td><code>await_approval</code></td><td>下一个可运行步骤是未审批的破坏性动作</td><td>请人在 CLI 执行 <code>goal approve-step</code>，不得改用其它动作绕行</td></tr>
+<tr><td><code>done</code></td><td>目标已到终态或已转人工</td><td>停止并汇总</td></tr></tbody>
+</table></div>
+<p><code>hint</code> 由持久状态现算、不入库，因此不会与步骤状态不一致；<code>failed</code> 目标同样返回 <code>done</code>，因为 <code>escalate</code> 之后的决定属于人。</p>
 <p>一次完整闭环，用一个目标串起前面几章的命令（第 4 步为破坏性动作）：</p>
 <div class="code"><pre data-lang="sh"><code>bkagent goal add --db .bkagent/control.db --target 127.0.0.1:5432/&lt;db&gt; \
   --intent '把 &lt;db&gt; 的最新逻辑备份恢复到 &lt;db&gt;_copy，并保留可核对的校验证据' \
@@ -678,7 +687,7 @@ dsh --profile web --no-open                                # 设置 → Agent �
 <p>第一次 <code>goal run</code> 会停在第 4 步：</p>
 <figure class="term"><a class="zoom" href="assets/tutorial/14-goal-approval.png" data-alt="goal run 停在审批"><img src="assets/tutorial/14-goal-approval.png" alt="goal run 停在审批" width="2400" height="2980" decoding="async"></a>
 <figcaption><span class="n">14</span><span>goal run 停在审批</span></figcaption></figure>
-<p>下列输出为节选：前三步均为 <code>succeeded</code>，此处只保留第一条。</p>
+<p>下列输出为节选：前三步均为 <code>succeeded</code>，此处只保留第一条。截图早于 <code>hint</code> 字段加入，下方 JSON 为当前输出。</p>
 <div class="code"><pre data-lang="json"><code>{
   "goalId": "gol_31752057-<span class="j-num">3818</span>-<span class="j-num">4</span>bd3-<span class="j-num">8</span>ec7-<span class="j-num">7</span>fa5179c9698",
   "state": "running",
@@ -691,7 +700,8 @@ dsh --profile web --no-open                                # 设置 → Agent �
     "requiresHuman": <span class="j-num">true</span>
   },
   "progress": { "total": <span class="j-num">4</span>, "succeeded": <span class="j-num">3</span>, "failed": <span class="j-num">0</span>, "ready": <span class="j-num">1</span> },
-  "next": { "kind": "run", "stepId": "stp_a603ed48-…" }
+  "next": { "kind": "run", "stepId": "stp_a603ed48-…" },
+  "hint": "await_approval"
 }</code></pre></div>
 <p>审批由人在 CLI 完成，之后再次 <code>goal run</code> 只补执行剩余步骤：</p>
 <figure class="term"><a class="zoom" href="assets/tutorial/15-goal-approve-run.png" data-alt="审批通过后继续执行"><img src="assets/tutorial/15-goal-approve-run.png" alt="审批通过后继续执行" width="2400" height="1966" decoding="async"></a>
@@ -701,7 +711,8 @@ dsh --profile web --no-open                                # 设置 → Agent �
   "state": "succeeded",
   "executed": [{ "stepId": "stp_a603ed48-…", "attempt": <span class="j-num">2</span>, "exitCode": <span class="j-num">0</span>, "state": "succeeded" }],
   "progress": { "total": <span class="j-num">4</span>, "succeeded": <span class="j-num">4</span>, "failed": <span class="j-num">0</span>, "abandoned": <span class="j-num">0</span> },
-  "next": { "kind": "done", "failed": <span class="j-num">false</span> }
+  "next": { "kind": "done", "failed": <span class="j-num">false</span> },
+  "hint": "done"
 }</code></pre></div>
 <p>账本与记忆均可查询：<code>goal show</code> 返回目标、步骤、每次尝试的退出码、错误类与失败签名；<code>memory search</code> 按签名检索历史结果（成功与失败均记录）：</p>
 <div class="code"><pre data-lang="sh"><code>bkagent goal show  --db .bkagent/control.db --goal &lt;goal-id&gt;
@@ -713,8 +724,9 @@ bkagent memory search --db .bkagent/control.db --target 127.0.0.1:5432/&lt;db&gt
 <tr><td>需要人</td><td>人</td><td><code>escalate</code> / <code>abandon</code>；<code>approval:required</code> 只允许 <code>escalate</code></td></tr>
 <tr><td>进程崩溃留下 <code>running</code> 步骤</td><td>核心</td><td><code>goal run</code> 启动时以签名 <code>stalled</code> 记一次失败尝试，不猜副作用是否已发生</td></tr></tbody>
 </table></div>
-<p>一次实际的 <code>replan</code>（本次执行）：第 2 步把库名写成不存在的 <code>bk_missing</code>，<code>goal run</code> 以 <code>errorClass: permanent</code>、<code>signature: schema:database-missing</code>（退出码 1）失败；诊断给出的候选为 <code>replan</code>（<code>requiresAction: true</code>）与 <code>escalate</code>。执行 <code>goal remediate --kind replan --action-json …</code> 后，该步骤回到 <code>ready</code>、目标回到 <code>planned</code>，再次 <code>goal run</code> 成功（<code>attempt: 2</code>）。这说明「自我修正」只替换动作，不改变门禁与历史；同时 <code>replan</code> 会清空该步骤已有的审批记录，替换后的破坏性动作须重新执行 <code>goal approve-step</code>。</p>
-<p>dsh 侧对应四个工具：<code>bk_goal</code>（open / plan / next / status / diagnose）、<code>bk_step_run</code>、<code>bk_remediate</code>、<code>bk_recall</code>。<strong>审批刻意不做成工具</strong>：MCP 与模型都无法自行放行破坏性步骤，只能在 CLI 执行 <code>bkagent goal approve-step</code>。</p>
+<p>一次实际的 <code>replan</code>（本次执行）：第 2 步把库名写成不存在的 <code>bk_missing</code>，<code>goal run</code> 以 <code>errorClass: permanent</code>、<code>signature: schema:database-missing</code>（退出码 1）失败；诊断给出的候选为 <code>replan</code>（<code>requiresAction: true</code>）与 <code>escalate</code>。执行 <code>goal remediate --kind replan --action-json …</code> 后，该步骤回到 <code>ready</code>、目标回到 <code>planned</code>，返回 <code>hint: run_step</code>，再次 <code>goal run</code> 成功（<code>attempt: 2</code>）。这说明「自我修正」只替换动作，不改变门禁与历史；同时 <code>replan</code> 会清空该步骤已有的审批记录，替换后的破坏性动作须重新执行 <code>goal approve-step</code>。</p>
+<p>dsh 侧对应四个工具：<code>bk_goal</code>（open / plan / next / status / diagnose）、<code>bk_step_run</code>、<code>bk_remediate</code>、<code>bk_recall</code>。<strong>审批刻意不做成工具</strong>：MCP 与模型都无法自行放行破坏性步骤，只能在 CLI 执行 <code>bkagent goal approve-step</code>。闭环行为契约写在 <code>presets/pg-dba/skills/goal-loop/SKILL.md</code>，由 <code>pnpm verify:skills</code> 的 MANIFEST 哈希守护；<code>bk_step_run</code> 与 <code>bk_remediate</code> 在失败与被拒时仍返回诊断或 <code>refused</code> 载荷，并附带 <code>exitCode</code>。</p>
+<p>这套组合的等级是 <strong>L1 受监督智能体</strong>，判定尺子与证据链见 <a href="agent-loop.md">agent-loop.md</a> §9。模型侧行为由决策层回放守住：<code>packages/dsh-plugin/test/goal-replay.test.js</code> 以固定决策序列经同一工具定义驱动真实子进程与真实控制库，断言 <code>hint</code> 的四个取值。</p>
 <p>未做且不应描述为已实现：多智能体协作、记忆的向量检索、自由 DAG 重写、目标级并发；真实模型驱动这条闭环的端到端验收（E-09）仍未纳入发布准入检查。</p>
 <h2 id="s11"><span class="hnum">11</span><span class="htxt">故障排查顺序</span></h2>
 <figure class="dg-fig"><svg class="dg" viewBox="0 0 960 404" role="img" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
@@ -781,7 +793,7 @@ bkagent memory search --target 127.0.0.1:5432/&lt;db&gt;</code></pre></div>
 <thead><tr><th>内容</th><th>状态</th></tr></thead>
 <tbody><tr><td><code>inspect</code>、<code>providers</code>、<code>asset-set</code>、<code>backup --mode logical</code>、<code>verify</code>、<code>catalog</code>、<code>asset-rpo</code>、<code>report</code>、<code>metrics</code>、<code>restore</code>（含三次门禁拒绝与一次通过）、<code>approve</code>、<code>approvals</code>、<code>watchdog</code>、<code>dashboard --out</code></td><td>在本地 PostgreSQL 16.15 上实际执行，输出为真实回显</td></tr>
 <tr><td>dsh 0.2.2-rc.4 安装、插件挂载与 <code>pg-dba</code> 预设</td><td>已执行：<code>--dump-config</code> 出现 <code>preset-pg-dba</code>，设置页显示「自定义 / PostgreSQL 备份恢复」且无加载失败；未用模型实际发起一次会话</td></tr>
-<tr><td>智能体闭环：<code>goal add</code> / <code>next</code> / <code>run</code> / <code>diagnose</code> / <code>remediate</code> / <code>approve-step</code> / <code>show</code>、<code>memory search</code></td><td>在本地 PostgreSQL 16.15 上实际执行：4 步目标先停在 <code>approval:required</code>（退出码 1），审批后 <code>succeeded</code>；另一次目标以 <code>permanent</code> / <code>schema:database-missing</code> 失败，<code>replan</code> 后 <code>succeeded</code>（<code>attempt: 2</code>）；<code>memory search</code> 返回对应签名条目。<strong>未经模型驱动</strong>，E-09 未纳入准入检查</td></tr>
+<tr><td>智能体闭环：<code>goal add</code> / <code>next</code> / <code>run</code> / <code>diagnose</code> / <code>remediate</code> / <code>approve-step</code> / <code>show</code>、<code>memory search</code></td><td>在本地 PostgreSQL 16.15 上实际执行：4 步目标先停在 <code>approval:required</code>（退出码 1），审批后 <code>succeeded</code>；另一次目标以 <code>permanent</code> / <code>schema:database-missing</code> 失败，<code>replan</code> 后 <code>succeeded</code>（<code>attempt: 2</code>）；<code>memory search</code> 返回对应签名条目。决策层回放（<code>packages/dsh-plugin/test/goal-replay.test.js</code>）已在 <code>pnpm test</code> 内执行并通过。<strong>未经模型驱动</strong>，E-09 未纳入发布准入</td></tr>
 <tr><td>双人复核的<strong>通过态</strong></td><td>未演示：需要第二个操作系统用户执行 <code>approve</code>，本教程只展示 <code>distinct: 1</code> 的拒绝与自审被忽略</td></tr>
 <tr><td><code>--transport ssh</code> / <code>--transport kubectl</code>、物理备份、PITR、<code>pgbackrest-*</code>、<code>walg-*</code>、<code>retain</code>、MCP 入口</td><td>未执行，只给入口与前置条件</td></tr>
 <tr><td>V3 校验等级</td><td>未实现</td></tr></tbody>
