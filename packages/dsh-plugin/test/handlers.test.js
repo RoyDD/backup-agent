@@ -245,3 +245,204 @@ describe('pg_pitr argv', () => {
     expect(approvals).toBe(1)
   })
 })
+
+describe('goal and memory argv', () => {
+  const STEPS = [
+    {
+      intent: '检查实例',
+      action: { command: 'inspect', args: ['--dsn', 'postgres://u@h/db'] },
+    },
+    {
+      intent: '恢复到新库',
+      action: {
+        command: 'restore',
+        args: ['--dsn', 'postgres://u@h/db', '--input', '/tmp/a.dump'],
+      },
+      dependsOn: [1],
+    },
+  ]
+  const CONSTRAINTS = { maxSteps: 5, maxStepAttempts: 2, allowDestructive: false }
+
+  it('builds goal add argv for op open with a decomposition and constraints', async () => {
+    const { calls, run } = fakeRun()
+    await createHandlers(run).goal({
+      op: 'open',
+      target: 'prod-app',
+      intent: '把 app 恢复到新库并比对行数',
+      steps: STEPS,
+      constraints: CONSTRAINTS,
+      principal: 'ops',
+      db: '/tmp/control.db',
+    })
+    expect(calls[0]).toEqual([
+      'goal',
+      'add',
+      '--target',
+      'prod-app',
+      '--intent',
+      '把 app 恢复到新库并比对行数',
+      '--steps-json',
+      JSON.stringify(STEPS),
+      '--constraints-json',
+      JSON.stringify(CONSTRAINTS),
+      '--principal',
+      'ops',
+      '--db',
+      '/tmp/control.db',
+    ])
+  })
+
+  it('omits the optional open flags and uses the default control db', async () => {
+    const { calls, run } = fakeRun()
+    await createHandlers(run).goal({ op: 'open', target: 'prod-app', intent: '巡检' })
+    expect(calls[0]).toEqual([
+      'goal',
+      'add',
+      '--target',
+      'prod-app',
+      '--intent',
+      '巡检',
+      '--db',
+      defaultDb(),
+    ])
+  })
+
+  it('builds goal plan argv with the serialised steps', async () => {
+    const { calls, run } = fakeRun()
+    await createHandlers(run).goal({
+      op: 'plan',
+      goal: 'g1',
+      steps: STEPS,
+      db: '/tmp/control.db',
+    })
+    expect(calls[0]).toEqual([
+      'goal',
+      'plan',
+      '--goal',
+      'g1',
+      '--steps-json',
+      JSON.stringify(STEPS),
+      '--db',
+      '/tmp/control.db',
+    ])
+  })
+
+  it('maps next, status and diagnose onto their subcommands', async () => {
+    const { calls, run } = fakeRun()
+    const handlers = createHandlers(run)
+    await handlers.goal({ op: 'next', goal: 'g1' })
+    await handlers.goal({ op: 'status', goal: 'g1' })
+    await handlers.goal({ op: 'diagnose', step: 's1' })
+    expect(calls).toEqual([
+      ['goal', 'next', '--goal', 'g1', '--db', defaultDb()],
+      ['goal', 'show', '--goal', 'g1', '--db', defaultDb()],
+      ['goal', 'diagnose', '--step', 's1', '--db', defaultDb()],
+    ])
+  })
+
+  it('refuses an op whose required fields are missing, before spawning', async () => {
+    const { calls, run } = fakeRun()
+    const handlers = createHandlers(run)
+    await expect(handlers.goal({ op: 'plan', goal: 'g1' })).rejects.toThrow('requires steps')
+    await expect(handlers.goal({ op: 'open', target: 'prod-app' })).rejects.toThrow(
+      'requires intent',
+    )
+    await expect(handlers.goal({ op: 'next' })).rejects.toThrow('requires goal')
+    await expect(handlers.goal({ op: 'diagnose' })).rejects.toThrow('requires step')
+    await expect(handlers.goal({ op: 'launch' })).rejects.toThrow('unknown op')
+    expect(calls).toEqual([])
+  })
+
+  it('builds goal run argv for one step', async () => {
+    const { calls, run } = fakeRun()
+    await createHandlers(run).stepRun({ goal: 'g1', db: '/tmp/control.db' })
+    expect(calls[0]).toEqual([
+      'goal',
+      'run',
+      '--goal',
+      'g1',
+      '--db',
+      '/tmp/control.db',
+    ])
+  })
+
+  it('builds goal remediate argv with a replan action', async () => {
+    const { calls, run } = fakeRun()
+    const action = { command: 'backup', args: ['--dsn', 'postgres://u@h/db', '--out', '/tmp/b'] }
+    await createHandlers(run).remediate({
+      step: 's1',
+      kind: 'replan',
+      action,
+      reason: '归档路径不存在',
+      db: '/tmp/control.db',
+    })
+    expect(calls[0]).toEqual([
+      'goal',
+      'remediate',
+      '--step',
+      's1',
+      '--kind',
+      'replan',
+      '--action-json',
+      JSON.stringify(action),
+      '--reason',
+      '归档路径不存在',
+      '--db',
+      '/tmp/control.db',
+    ])
+  })
+
+  it('builds a retry without an action and the default control db', async () => {
+    const { calls, run } = fakeRun()
+    await createHandlers(run).remediate({ step: 's1', kind: 'retry' })
+    expect(calls[0]).toEqual([
+      'goal',
+      'remediate',
+      '--step',
+      's1',
+      '--kind',
+      'retry',
+      '--db',
+      defaultDb(),
+    ])
+  })
+
+  it('refuses a replan without a new action, before spawning', async () => {
+    const { calls, run } = fakeRun()
+    await expect(createHandlers(run).remediate({ step: 's1', kind: 'replan' })).rejects.toThrow(
+      'requires action',
+    )
+    expect(calls).toEqual([])
+  })
+
+  it('builds memory search argv with filters and a numeric limit', async () => {
+    const { calls, run } = fakeRun()
+    await createHandlers(run).recall({
+      target: 'prod-app',
+      signature: 'sqlstate:42P01',
+      query: '归档失败',
+      limit: 5,
+      db: '/tmp/control.db',
+    })
+    expect(calls[0]).toEqual([
+      'memory',
+      'search',
+      '--target',
+      'prod-app',
+      '--signature',
+      'sqlstate:42P01',
+      '--query',
+      '归档失败',
+      '--limit',
+      '5',
+      '--db',
+      '/tmp/control.db',
+    ])
+  })
+
+  it('searches all memory when no filter is given', async () => {
+    const { calls, run } = fakeRun()
+    await createHandlers(run).recall({})
+    expect(calls[0]).toEqual(['memory', 'search', '--db', defaultDb()])
+  })
+})

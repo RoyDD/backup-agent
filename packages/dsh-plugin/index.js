@@ -132,13 +132,45 @@ export function toParameterSchema(inputSchema) {
   const required = new Set(inputSchema.required ?? [])
   const parameters = {}
   for (const [key, property] of Object.entries(inputSchema.properties ?? {})) {
-    const spec = { type: property.type }
-    if (property.description !== undefined) spec.description = property.description
-    if (property.enum !== undefined) spec.enum = property.enum
-    if (required.has(key)) spec.required = true
-    parameters[key] = spec
+    parameters[key] = toParameterSpec(property, required.has(key))
   }
   return parameters
+}
+
+/**
+ * The dsh authoring DSL is not raw JSON Schema, so this projection recurses
+ * instead of forwarding nodes:
+ *
+ * - object nodes need an explicit boolean `additionalProperties`;
+ * - array nodes carry their element schema as `items`, which is compiled with
+ *   the same DSL (and therefore the same rules);
+ * - requiredness is a per-property `required: true`, never a `required: [...]`
+ *   array, and `required` is not allowed on an `items` node at all.
+ *
+ * A node that keeps the JSON Schema shape makes the compiler reject the whole
+ * tool, so the preset would fail to load rather than reject one argument.
+ */
+function toParameterSpec(property, isRequired = false) {
+  const spec = { type: property.type }
+  if (property.description !== undefined) spec.description = property.description
+  if (property.enum !== undefined) spec.enum = property.enum
+  // Only forward openness the source declared; never invent it.
+  if (property.additionalProperties !== undefined) {
+    spec.additionalProperties = property.additionalProperties
+  }
+  if (property.items !== undefined) {
+    spec.items = toParameterSpec(property.items)
+  }
+  if (property.properties !== undefined) {
+    const required = new Set(property.required ?? [])
+    const properties = {}
+    for (const [key, child] of Object.entries(property.properties)) {
+      properties[key] = toParameterSpec(child, required.has(key))
+    }
+    spec.properties = properties
+  }
+  if (isRequired) spec.required = true
+  return spec
 }
 
 function textTool(definition, execute) {

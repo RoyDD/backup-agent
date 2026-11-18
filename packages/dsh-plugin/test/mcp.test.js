@@ -109,7 +109,7 @@ describe('mcp stdio server', () => {
     expect(response.result.serverInfo).toEqual({ name: 'backup-agent', version: '0.1.0' })
   })
 
-  it('lists the eight shared tools with JSON Schema input', async () => {
+  it('lists the twelve shared tools with JSON Schema input', async () => {
     const response = await client.request('tools/list')
     const { tools } = response.result
     expect(tools.map((tool) => tool.name)).toEqual([
@@ -121,6 +121,10 @@ describe('mcp stdio server', () => {
       'pg_report',
       'kb_search',
       'pg_pitr',
+      'bk_goal',
+      'bk_step_run',
+      'bk_remediate',
+      'bk_recall',
     ])
     expect(tools).toHaveLength(TOOL_DEFINITIONS.length)
     for (const tool of tools) {
@@ -129,6 +133,12 @@ describe('mcp stdio server', () => {
       expect(tool.inputSchema.additionalProperties).toBe(false)
       expect(Array.isArray(tool.inputSchema.required)).toBe(true)
     }
+  })
+
+  it('exposes no tool that could approve a step', async () => {
+    const response = await client.request('tools/list')
+    const names = response.result.tools.map((tool) => tool.name)
+    expect(names.filter((name) => name.includes('approve'))).toEqual([])
   })
 
   it('runs a read-only tool through the shared handlers and returns CLI JSON', async () => {
@@ -156,6 +166,18 @@ describe('mcp stdio server', () => {
     expect(response.result.isError).toBe(true)
     expect(response.result.content[0].text).toContain('approval seam')
     expect(readCalls()).toBe('')
+  })
+
+  it('runs bk_step_run like any other tool: the step gate lives in the CLI', async () => {
+    const response = await client.request('tools/call', {
+      name: 'bk_step_run',
+      arguments: { goal: 'g1' },
+    })
+    expect(response.error).toBeUndefined()
+    expect(response.result.isError).toBeUndefined()
+    const value = JSON.parse(response.result.content[0].text)
+    expect(value.argv).toEqual(['goal', 'run', '--goal', 'g1', '--db', CONTROL_DB])
+    expect(readCalls().trim()).toBe(value.argv.join(' '))
   })
 
   it('rejects an unknown method with -32601', async () => {
