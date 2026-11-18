@@ -117,7 +117,21 @@ function prepareHome() {
   const home = mkdtempSync(join(tmpdir(), 'bkagent-e2e-dsh-'))
   const profile = join(home, 'profiles', PROFILE)
   mkdirSync(dirname(profile), { recursive: true })
-  execFileSync('cp', ['-R', join(SOURCE_HOME, 'profiles', PROFILE), profile], { stdio: 'inherit' })
+  const source = join(SOURCE_HOME, 'profiles', PROFILE)
+  if (existsSync(source)) {
+    execFileSync('cp', ['-R', source, profile], { stdio: 'inherit' })
+  } else {
+    /**
+     * A fresh runner has no dsh home at all. dsh writes the shipped profile
+     * template into `$DSH_HOME` on first use, so composing once is the
+     * bootstrap; nothing is downloaded.
+     */
+    log(`no profile at ${source}; bootstrapping the shipped template`)
+    execFileSync('dsh', ['--profile', PROFILE, '--dump-config'], {
+      env: { ...process.env, DSH_HOME: home },
+      stdio: 'ignore',
+    })
+  }
 
   /**
    * The copied profile carries whatever `node_modules/@backup-agent/dsh-plugin`
