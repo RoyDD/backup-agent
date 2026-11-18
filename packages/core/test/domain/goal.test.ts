@@ -49,6 +49,12 @@ describe('step state machine', () => {
   it('lets a pending step become blocked when its dependency can never succeed', () => {
     expect(canTransitionStep('pending', 'blocked')).toBe(true)
   })
+
+  it('lets a ready step be escalated without being dispatched', () => {
+    // An approval failure leaves the step `ready`; `escalate` is the only
+    // candidate its diagnosis offers, so that edge has to exist.
+    expect(canTransitionStep('ready', 'failed')).toBe(true)
+  })
 })
 
 describe('terminality', () => {

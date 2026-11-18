@@ -49,7 +49,15 @@ const GOAL_TRANSITIONS: Record<GoalState, readonly GoalState[]> = {
 
 const STEP_TRANSITIONS: Record<StepState, readonly StepState[]> = {
   pending: ['ready', 'blocked', 'abandoned'],
-  ready: ['running', 'pending', 'abandoned'],
+  /**
+   * `ready -> failed` exists for one case: an approval failure. The step stays
+   * `ready` after `goal run` refuses to dispatch it, so that a human can still
+   * approve it and the same step can run later. If the decision instead is
+   * `escalate` (the only candidate the approval diagnosis offers), the step has
+   * to be able to record that it will not run: without this edge the offered
+   * candidate set could never be applied, and `escalate` would be decorative.
+   */
+  ready: ['running', 'pending', 'failed', 'abandoned'],
   running: ['succeeded', 'failed', 'ready', 'abandoned'],
   succeeded: [],
   failed: ['ready', 'abandoned'],
