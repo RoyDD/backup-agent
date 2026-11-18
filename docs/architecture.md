@@ -131,7 +131,7 @@ flowchart TD
 3. 控制库（`--db` → `BKAGENT_DB` → `.bkagent/control.db`）中存在与 `plan.targetId` 精确匹配的 Asset，否则报出 targetId 与 `asset-set` 注册命令；
 4. 命中生产环境 Asset 时升级为 `production-destructive`，要求两名不同审批人的当前审批（`protected` 只影响保留策略，不构成审批豁免）；审批绑定 `plan.fingerprint.configDigest`，按审批人取最新决定（后续 reject 覆盖先前 approve），执行主体自身的审批被排除。
 
-执行前会再次探测并用最终 Plan 重新跑一遍门禁：逻辑恢复在 `preparePlan` 刷新时不再回填旧 `systemIdentifier`，无法证明身份即中止；PITR、pgBackRest、WAL-G 路径在执行器调用前重新探测，身份变化或不可得则不执行任何步骤。Asset 与审批决定还会在 `BEGIN IMMEDIATE` 的 run-start 事务中复核；门禁之后出现的 reject 或生产环境变更会回滚 lease/fence 与 run envelope，保证没有 argv 到达 executor。
+执行前会再次探测并用最终 Plan 重新执行一次门禁：逻辑恢复在 `preparePlan` 刷新时不再回填旧 `systemIdentifier`，无法证明身份即中止；PITR、pgBackRest、WAL-G 路径在执行器调用前重新探测，身份变化或不可得则不执行任何步骤。Asset 与审批决定还会在 `BEGIN IMMEDIATE` 的 run-start 事务中复核；门禁之后出现的 reject 或生产环境变更会回滚 lease/fence 与 run envelope，保证没有 argv 到达 executor。
 
 审批记录自 migration `007_approval_history.sql` 起为 append-only；`four-eyes` 的身份来自 CLI 推导的 principal（`os:$USER` 或 `--principal`），仅用于防止误自审，不构成密码学身份证明。
 
@@ -167,7 +167,7 @@ PITR 使用该机制：`buildPitrRestorePlan` 始终附带 cleanup 图——`sto
 
 - `pg_ctl start` 成功后才写入 `<data-dir>/.bkagent-pitr-started`，cleanup 的停止步骤以「标记 + `postmaster.pid` 同时存在」为前置条件（前者证明实例由本 Plan 启动，后者证明仍有进程可停）。因此清理**只会停止本 Plan 启动的实例**：若 `start-instance` 因数据目录已有服务而卡在前置条件（`postmaster.pid` 存在），标记并不存在，cleanup 会跳过，不会误停他人的实例。
 - 停止后删除标记，避免复用同一数据目录的下一个实例被后续清理误停。
-- 此前目标未达成时服务器会继续占用数据目录，导致重跑时 `pg_ctl start` 直接失败；现在失败后实例会被停止，修正参数后可直接重跑。若清理本身失败（`cleanupFailed`），CLI 会在 stderr 明确报告，需要人工停止实例后再重试。
+- 此前目标未达成时服务器会继续占用数据目录，导致再次执行时 `pg_ctl start` 直接失败；现在失败后实例会被停止，修正参数后可直接重试。若清理本身失败（`cleanupFailed`），CLI 会在 stderr 明确报告，需要人工停止实例后再重试。
 
 ### 2.4 Outbox 派发
 
@@ -240,6 +240,6 @@ flowchart TD
 
 调度器的 `next` 只回答「当前是否可派发步骤」，无法表达「失败步骤等待修复」与「破坏性步骤等待审批」。因此 `goal run` 与 `goal remediate` 的载荷另带 `hint`，取值封闭为 `run_step` / `remediate` / `await_approval` / `done`，由目标与步骤状态现算、不入库，模型只能在该集合内行动。
 
-工具面只有一份实现：`packages/dsh-plugin/tools.js` 持有定义与 `buildArgv`，`packages/dsh-plugin/runner.js` 负责 spawn、解析与定义到 handler 的投影，`index.js`（dsh 插件）、`mcp.js`（MCP stdio）与决策层回放用例（`packages/dsh-plugin/test/goal-replay.test.js`）共用它。`bk_step_run` 与 `bk_remediate` 标记 `tolerateFailure`：这两个动词在失败与被拒时仍把决定写入 stdout 并以非零码退出，解析器保留载荷并附加 `exitCode`，否则模型只拿到一个退出码而看不到候选集。
+工具面只有一份实现：`packages/dsh-plugin/tools.js` 持有定义与 `buildArgv`，`packages/dsh-plugin/runner.js` 负责 spawn、解析与定义到 handler 的投影，`index.js`（dsh 插件）、`mcp.js`（MCP stdio）与决策层回放用例（`packages/dsh-plugin/test/goal-replay.test.js`）共用它。`bk_step_run` 与 `bk_remediate` 标记 `tolerateFailure`：这两个动词在失败与被拒时仍把决定写入 stdout 并以非零码退出，解析器保留载荷并附加 `exitCode`；否则模型只得到退出码，看不到候选集。
 
 等级判定、四条判据的证据与准入检查的边界见 [agent-loop.md](agent-loop.md) §9。

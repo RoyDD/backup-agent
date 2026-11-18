@@ -4,7 +4,7 @@
 
 ## 运行形态：`dsh headless --json`
 
-2026-11-18 起，脚本改用 `dsh headless --json`，不再起 web 服务、不再抓 token URL、不再解压 `session.jsonl.zstd`：
+2026-11-18 起，脚本改用 `dsh headless --json`，不再启动 web 服务、不再解析 token URL、不再解压 `session.jsonl.zstd`：
 
 1. 以用户 profile 为模板，在临时目录构造独立 `DSH_HOME`（`$DSH_HOME/profiles/headless` 的副本）；没有现成 profile 时（全新机器）改为让 dsh 在该目录生成出厂模板，不下载任何内容；
 2. 用 `--patch` 叠加一份只存在于临时目录的 overlay，以 `insert` 形式注册 `@backup-agent/dsh-plugin`；

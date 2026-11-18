@@ -157,7 +157,7 @@ bkagent memory search --db <path> [--target <id>] [--signature <s>] [--query <te
 ### 9.5 证据与指标
 
 - 准入检查：`pnpm test` 内的决策层回放，要求先执行 `pnpm build:cli`，并需要本地 PostgreSQL。前置条件缺失时用例以 SKIP 报告，不计为 PASS。
-- 发版前：真实模型经 `dsh headless --json` 运行，断言 `tool_call` 序列与 `hint`；使用独立 `DSH_HOME`，不改动 `~/.dsh`。harness 与一次成功记录见 [`e2e-agent.md`](e2e-agent.md)；本仓库没有 CI，该步仍需人工执行。
+- 发版档：`GATE_E2E=1 scripts/gate.sh` 以真实模型经 `dsh headless --json` 运行，断言 `tool_call` 序列与 `hint`；使用独立 `DSH_HOME`，不改动 `~/.dsh`。harness 与成功记录见 [`e2e-agent.md`](e2e-agent.md)，准入档位与退出码见 [`admission.md`](admission.md)。
 - 自主完成率：分母为进入 `planned` 的目标，分子为未经人工 `remediate` / `escalate` 即到达 `succeeded` 的目标。样本少于 30 条时只报绝对条数与失败归因，不报百分比。
 
 ## 10. v1 边界
@@ -168,4 +168,4 @@ bkagent memory search --db <path> [--target <id>] [--signature <s>] [--query <te
 - 记忆的向量检索或语义聚类；
 - 自由 DAG 重写（`replan` 只原地替换动作）；
 - 目标级并发（同一目标串行执行）；
-- E-09 真实模型 E2E 仍未进入发布准入检查。决策层回放已进入 `pnpm test`（§9.5），但「模型是否按契约决策」仍无回归门禁——这是当前最大的缺口。
+- E-09 已进入发版档本地准入检查（§9.5），但日常档不执行模型，失败与审批路径仍无模型证据；这是当前最大的缺口。

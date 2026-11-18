@@ -765,9 +765,9 @@ bkagent memory search --target 127.0.0.1:5432/<db>
 |---|---|
 | `inspect`、`providers`、`asset-set`、`backup --mode logical`、`verify`、`catalog`、`asset-rpo`、`report`、`metrics`、`restore`（含三次门禁拒绝与一次通过）、`approve`、`approvals`、`watchdog`、`dashboard --out` | 在本地 PostgreSQL 16.15 上实际执行，输出为真实回显 |
 | dsh 0.2.2-rc.4 安装、插件挂载与 `pg-dba` 预设 | 已执行：`--dump-config` 出现 `preset-pg-dba`，设置页显示「自定义 / PostgreSQL 备份恢复」且无加载失败；未用模型实际发起一次会话 |
-| 智能体闭环：`goal add` / `next` / `run` / `diagnose` / `remediate` / `approve-step` / `show`、`memory search` | 在本地 PostgreSQL 16.15 上实际执行：4 步目标先停在 `approval:required`（退出码 1），审批后 `succeeded`；另一次目标以 `permanent` / `schema:database-missing` 失败，`replan` 后 `succeeded`（`attempt: 2`）；`memory search` 返回对应签名条目。决策层回放（`packages/dsh-plugin/test/goal-replay.test.js`）已在 `pnpm test` 内执行并通过。**未经模型驱动**，E-09 未纳入发布准入 |
+| 智能体闭环：`goal add` / `next` / `run` / `diagnose` / `remediate` / `approve-step` / `show`、`memory search` | 在本地 PostgreSQL 16.15 上实际执行：4 步目标先停在 `approval:required`（退出码 1），审批后 `succeeded`；另一次目标以 `permanent` / `schema:database-missing` 失败，`replan` 后 `succeeded`（`attempt: 2`）；`memory search` 返回对应签名条目。决策层回放（`packages/dsh-plugin/test/goal-replay.test.js`）已在 `pnpm test` 内执行并通过。本教程的闭环演练**未经模型驱动**；模型驱动路径由发版档准入检查覆盖（`GATE_E2E=1 scripts/gate.sh`），断言与限制见 [e2e-agent.md](e2e-agent.md) |
 | 双人复核的**通过态** | 未演示：需要第二个操作系统用户执行 `approve`，本教程只展示 `distinct: 1` 的拒绝与自审被忽略 |
 | `--transport ssh` / `--transport kubectl`、物理备份、PITR、`pgbackrest-*`、`walg-*`、`retain`、MCP 入口 | 未执行，只给入口与前置条件 |
 | V3 校验等级 | 未实现 |
 
-相关的离线验收（E-08）与真实模型端到端（E-09）尚未纳入发布准入检查。E-09 的 harness 可用 `BK_E2E=1 node scripts/e2e-agent.mjs` 人工执行，断言与限制见 [e2e-agent.md](e2e-agent.md)；当前完成度以 [status.md](status.md) 为准。
+本仓库不配置 CI，准入检查在本地执行：`bash scripts/gate.sh` 覆盖静态类型检查、CLI 构建、`pnpm test` 与技能哈希；`GATE_E2E=1 bash scripts/gate.sh` 追加真实模型端到端（E-09）。退出码 `0` 表示全部通过、`1` 表示存在失败、`3` 表示存在未执行项（不计为通过）。档位、环境要求与未覆盖项见 [admission.md](admission.md)；离线验收（E-08）仍未纳入，当前完成度以 [status.md](status.md) 为准。
