@@ -83,6 +83,7 @@ interface GoalView {
     state: string
   }[]
   recovered?: { stepId: string; signature: string }[]
+  hint?: string
   diagnosis?: {
     signature: string
     errorClass: string
@@ -135,6 +136,7 @@ describe('goal loop against a live instance', () => {
     const run = await json<GoalView>(['goal', 'run', '--db', db, '--goal', created.value.goalId])
     expect(run.code).toBe(0)
     expect(run.value.state).toBe('succeeded')
+    expect(run.value.hint).toBe('done')
     expect(run.value.executed?.map((entry) => entry.state)).toEqual(['succeeded', 'succeeded'])
     expect(run.value.progress).toEqual(
       expect.objectContaining({ total: 2, succeeded: 2, failed: 0 }),
@@ -208,6 +210,9 @@ describe('goal loop against a live instance', () => {
     expect(failed.value.diagnosis?.signature).toBe('schema:database-missing')
     expect(kinds(failed.value)).toContain('replan')
     expect(kinds(failed.value)).not.toContain('retry')
+    // The run stopped on an open decision: the model has to remediate, not
+    // dispatch more steps.
+    expect(failed.value.hint).toBe('remediate')
 
     const shown = await json<GoalView>(['goal', 'show', '--db', db, '--goal', created.value.goalId])
     const stepId = shown.value.steps?.[0]?.stepId
@@ -230,6 +235,9 @@ describe('goal loop against a live instance', () => {
     ])
     expect(corrected.code).toBe(0)
     expect(corrected.value.goalState).toBe('planned')
+    // A replan leaves the replacement ready to dispatch, so the loop continues
+    // on the same goal instead of asking for another decision.
+    expect(corrected.value.hint).toBe('run_step')
 
     const done = await json<GoalView>(['goal', 'run', '--db', db, '--goal', created.value.goalId])
     expect(done.code).toBe(0)
@@ -287,6 +295,7 @@ describe('goal loop against a live instance', () => {
     expect(run.code).toBe(1)
     expect(run.value.diagnosis?.signature).toBe('approval:required')
     expect(kinds(run.value)).toEqual(['escalate'])
+    expect(run.value.hint).toBe('await_approval')
 
     // Nothing was dispatched: the step is still ready for a later, approved run.
     const shown = await json<GoalView>(['goal', 'show', '--db', db, '--goal', allowed.value.goalId])

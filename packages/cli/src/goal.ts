@@ -28,6 +28,7 @@ import {
   APPROVAL_REQUIRED_SIGNATURE,
   GOAL_STATES,
   actionArgv,
+  agentHint,
   asGoalId,
   asGoalStepId,
   asMemoryId,
@@ -55,6 +56,7 @@ import {
   validateGoalConstraints,
   type Diagnosis,
   type ErrorClass,
+  type AgentHint,
   type Goal,
   type GoalState,
   type GoalStep,
@@ -858,13 +860,20 @@ async function goalRemediate(args: readonly string[], deps: GoalCommandDeps): Pr
       kind: decision.kind,
       stepState: decision.stepState,
       goalState: decision.goalState,
+      // Re-read after the write: the hint describes the state the caller now
+      // has to act on, not the state the decision was made from.
+      hint: agentHint(
+        decision.goalState,
+        await repo.goalSteps.listByGoal(goal.goalId),
+      ),
     }
     if (decision.kind === 'replan') payload['action'] = redactAction(decision.action as StepAction)
     emit(
       deps,
       format,
       payload,
-      `step ${step.stepId} remediated (${decision.kind}): step=${decision.stepState} goal=${decision.goalState}`,
+      `step ${step.stepId} remediated (${decision.kind}): step=${decision.stepState} goal=${decision.goalState}` +
+        ` hint=${String(payload['hint'])}`,
     )
     return 0
   })
@@ -880,6 +889,8 @@ function emitRun(
     diagnosis?: Diagnosis
     progress: ReturnType<typeof goalProgress>
     next: Record<string, unknown>
+    /** The agent's next decision; `next` only says what the core may dispatch. */
+    hint: AgentHint
     recovered: readonly { stepId: string; signature: string }[]
   },
 ): void {
@@ -894,6 +905,7 @@ function emitRun(
     if (payload.diagnosis !== undefined) json['diagnosis'] = payload.diagnosis
     json['progress'] = payload.progress
     json['next'] = payload.next
+    json['hint'] = payload.hint
     if (payload.recovered.length > 0) json['recovered'] = payload.recovered
     writeJson(deps, json)
     return
@@ -917,6 +929,7 @@ function emitRun(
         `candidates=${payload.diagnosis.candidates.map((candidate) => candidate.kind).join(',')}`,
     )
   }
+  lines.push(`hint: ${payload.hint}`)
   deps.write(`${lines.join('\n')}\n`)
 }
 
@@ -1060,6 +1073,7 @@ async function goalRun(args: readonly string[], deps: GoalCommandDeps): Promise<
           executed,
           progress: goalProgress(steps),
           next: outcomeJson(outcome),
+          hint: agentHint(state, steps),
           recovered,
         })
         return outcome.failed ? 1 : 0
@@ -1120,6 +1134,7 @@ async function goalRun(args: readonly string[], deps: GoalCommandDeps): Promise<
           diagnosis: approvalDiagnosis,
           progress: goalProgress(steps),
           next: outcomeJson(nextRunnable(steps)),
+          hint: agentHint(state, steps),
           recovered,
         })
         return 1
@@ -1282,6 +1297,7 @@ async function goalRun(args: readonly string[], deps: GoalCommandDeps): Promise<
         diagnosis,
         progress: goalProgress(steps),
         next: outcomeJson(nextRunnable(steps)),
+        hint: agentHint(state, steps),
         recovered,
       })
       return 1
