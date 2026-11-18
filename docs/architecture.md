@@ -17,6 +17,7 @@ flowchart TB
     TOOLS["@backup-agent/dsh-plugin"]
     SKILLS["skills：pg-backup / pg-restore / pg-pitr / pg-verify / pg-troubleshoot / engine-extend"]
     KB["kb_search → SAG2 证据检索"]
+    GOAL["goal / step / memory<br/>拆解 · 调度 · 诊断 · 记忆"]
   end
 
   subgraph Core["控制平面 @backup-agent/core"]
@@ -39,7 +40,7 @@ flowchart TB
     NOTIFY["notifier：webhook / smtp"]
   end
 
-  DB[("SQLite 控制库<br/>Ticket · Mandate · Plan · Attempt · Artifact · Approval")]
+  DB[("SQLite 控制库<br/>Ticket · Mandate · Plan · Attempt · Artifact · Approval<br/>Goal · Step · Memory")]
   KDB[("var/knowledge.sqlite")]
   TARGET[("PostgreSQL / provider repository")]
 
@@ -48,8 +49,11 @@ flowchart TB
   DSH --> TOOLS
   SKILLS --> TOOLS
   TOOLS --> KB
+  TOOLS --> GOAL
+  GOAL --> DB
   KB -.-> KDB
   TOOLS --> PLAN
+  GOAL --> PLAN
   CLI --> PLAN
   PLAN --> GATE
   GATE --> APPROVE
@@ -201,4 +205,33 @@ sequenceDiagram
   A-->>U: 结论 + 引用 + 风险说明
 ```
 
-分层解耦：智能体层为轻量适配层（anti-corruption layer），仅承担协议转换与交互职责；业务语义与安全策略集中于核心库，确保交互式与无人值守两种场景行为一致。
+分层解耦：智能体层为轻量适配层（anti-corruption layer），承担协议转换与交互职责，并持久化目标与拆解；业务语义与安全策略仍集中于核心库——拆解要经 `validateDecomposition`，动作要经 capability grammar，破坏性动作要经门禁与人工审批——确保交互式与无人值守两种场景行为一致。
+
+## 4. Goal / Step / Action 层
+
+前 3 节描述的是单次执行。多步任务由 `goal` 层承载：目标是持久对象，拆解是持久对象，失败诊断与长期记忆也持久化。细节见 [agent-loop.md](agent-loop.md)。
+
+```mermaid
+flowchart TD
+  G["Goal：intent + 约束 + 状态"] --> S["goal_steps：序号 · 意图 · 动作 · 依赖"]
+  S --> V{"validateDecomposition"}
+  V -->|"步数 / 依赖 / grammar / 破坏性未开启"| X["issues → 4"]
+  V -->|"通过"| N{"nextRunnable"}
+  N -->|"blocked"| B["依赖已失败 → blocked"]
+  N -->|"run"| D{"破坏性且未审批"}
+  D -->|"是"| E["diagnose approval:required → 转人工"]
+  D -->|"否"| R["actionArgv → 既有 CLI 入口"]
+  R --> L["destructive-gate · lease · run-lifecycle"]
+  L --> O{"退出码"}
+  O -->|"0"| M["step_attempt + memory_entries"]
+  O -->|"非 0"| Q["classifyStepFailure → diagnose"]
+  Q -->|"retry 且在预算内"| N
+  Q -->|"其余"| H["返回候选集，停止"]
+```
+
+三条约束使它不成为第二条执行路径：
+
+1. `goal run` 不构造 Plan IR，也不直接调用 executor；它把动作拼成 argv 后回到 `runCli`，因此同一套门禁、租约、`run-lifecycle` 与 outbox 全部生效。
+2. 破坏性动作的 `--yes` 只在该 step 有人工审批时由核心追加，模型无法设置；`approval:required` 的诊断候选集只有 `escalate`。
+3. 动作只能由 `ACTION_FLAGS` 声明的 flag 组合而成，`--yes` / `--db` / `--principal` / `--transport` / `--state-dir` 一律保留给核心。
+

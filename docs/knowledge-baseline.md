@@ -9,7 +9,7 @@
 
 SAG2（arXiv 2610.22588）把「原文 passage → 词法索引 → 查询时用已选证据扩展检索」做到零建库成本：MuSiQue 11,656 passage 建库 2.36 s、25.87 MiB、零模型调用，R@10 从纯 BM25 的 54.41% 提到 86.62%。其消融显示增益来自**每轮打分 + 已选证据作为上下文**（只做词法扩展、最后打一次分只有 61.34%），所以后续实现必须是「逐轮重排」，而不是 query expansion 兜一层。
 
-对本仓库更关键的是：`code/docs/failure-catalog.md` 已经有 57 条带可观测签名、预检 ID 与分类的条目——这正好替代 SAG v1 里「用 LLM 抽事件和实体」那一步，实体是手写且精确的，抽取成本为零。
+对本仓库更关键的是：`code/docs/failure-catalog.md` 已经有 62 条带可观测签名、预检 ID 与分类的条目——这正好替代 SAG v1 里「用 LLM 抽事件和实体」那一步，实体是手写且精确的，抽取成本为零。
 
 ## 2. 语料
 
@@ -190,6 +190,8 @@ PG 领域知识同时在两个地方积累：`llm-wiki` 的 `postgresql-backup-r
 原因很直接：原文是英文引文，而题面用的是摘要里的中文措辞；两边混排时原文既拿不到分，又占位。所以引入 **tier**：`passage.tier` 取 `primary` / `evidence`，`search()` 默认只排 `primary`，`--include-evidence` 才把原文放进候选。
 
 落地后的默认口径回到 **R@10 50.01%**（相对 50.03% 的差异来自 passage ID 变化后的次序 tie-break），`--include-evidence` 为 48.85%——原文随时可查，但不再稀释排序。schema 升到 v3。
+
+2026-11-18 复核：目标闭环文档与故障目录新增条目（A-09–A-13）落地后重建索引，108 题口径为 **R@10 49.08%、MRR@10 0.3354**（`pnpm --filter @backup-agent/knowledge eval --questions eval/questions.jsonl`）。文档即语料：改文档就会动这个数字，引用时必须连同测量日期一起引。
 
 ## 10. 结论
 

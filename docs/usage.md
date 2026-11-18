@@ -107,6 +107,8 @@ erDiagram
   }
 ```
 
+多步任务在上表之上再加四个对象：`Goal`（意图 + 约束）、`GoalStep`（序号、动作、依赖）、`StepAttempt`（每次派发的退出码、错误类、失败签名与诊断）、`Memory`（跨运行的步骤结果）。它们不替代 `Ticket` / `Plan` / `Attempt`：`goal run` 每派发一步仍经同一入口产生一组 Ticket / Plan / Attempt，目标层只记录「为什么这么排、失败之后怎么办」。详见 [`agent-loop.md`](agent-loop.md)。
+
 校验等级决定「这条恢复点能不能用」：
 
 | 等级 | 含义 | 写入者 |
@@ -120,7 +122,7 @@ V2/V3 不会因为「声明」而存在：`artifact-add --verified-level V2` 必
 
 ## 3. 命令地图
 
-34 个命令按用途分成八组，先按意图选组，再查 §8 附录 A 的完整参数。
+36 个命令按用途分成九组，先按意图选组，再查 §8 附录 A 的完整参数。
 
 ```mermaid
 flowchart TD
@@ -144,7 +146,7 @@ flowchart TD
   O --> O3["retain / storage-purge / storage-gc"]
   O --> O4["dashboard / notify-test / outbox-dispatch"]
   T --> T1["exec / --transport ssh|kubectl"]
-  T --> T2["pg_* 工具（dsh） / bkagent-mcp"]
+  T --> T2["pg_* / bk_* 工具（dsh） / bkagent-mcp"]
 ```
 
 | 组 | 命令 | 是否需要控制库 |
@@ -156,6 +158,7 @@ flowchart TD
 | 清理 | `retain`、`storage-purge`、`storage-gc`、`pgbackrest-expire`、`walg-prune` | 是 |
 | 观测 | `catalog`、`report`、`metrics`、`capacity`、`watchdog`、`asset-rpo`、`trace`、`outbox-dispatch`、`dashboard`、`notify-test` | 是 |
 | 治理 | `asset-set`、`asset-list`、`approve`、`approvals`、`model-policy`、`cost` | 是 |
+| 闭环 | `goal`、`memory` | 是（目标、步骤、尝试与记忆都落库） |
 | 传输 | `exec`（自带 `--host` / `--pod`） | 否 |
 
 `--db` 缺省取 `$BKAGENT_DB`，再缺省为 `.bkagent/control.db`；控制库首次使用会自动跑迁移，新增迁移缺失时启动即报 `no such table`，用 `BKAGENT_MIGRATIONS` 指向迁移目录可修复（单文件安装的典型问题）。
@@ -667,10 +670,37 @@ node packages/dsh-plugin/mcp.js      # 或 bin：bkagent-mcp
 | `pg_pitr` | `pitr --yes …` | 是（需审批接缝） |
 | `pg_catalog` / `pg_report` | `catalog` / `report` | 否 |
 | `kb_search` | 知识库 `ask --json` | 否 |
+| `bk_goal` | `goal add\|plan\|next\|show\|diagnose` | 否 |
+| `bk_step_run` | `goal run` | 否（未审批的破坏性步骤不会被派发） |
+| `bk_remediate` | `goal remediate` | 否（只能选诊断给出的候选） |
+| `bk_recall` | `memory search` | 否 |
 
 - dsh 侧走 `approval.request()`：`exec.agent` 缺失或审批服务不可用即失败关闭，仅 `allowed-once` 放行。
 - MCP 侧没有审批通道，因此 `pg_restore` / `pg_pitr` 直接返回 `isError` 并提示需要 dsh 审批接缝——**MCP 下无法执行恢复**。
-- provider 类命令（`pgbackrest-*`、`walg-*`、`retain`、`storage-*`、`asset-*`）未暴露为工具，只能经 CLI 或 `bash` 调用。
+- `goal approve-step` 刻意不做成工具：审批只能由人在 CLI 完成，所以模型与 MCP 都无法自行放行破坏性步骤。
+- provider 类命令没有各自的一等工具；`pgbackrest-*` / `walg-*` / `metrics` / `asset-list` / `asset-rpo` 已进入 `ACTION_COMMANDS`，可由 `goal` 步骤派发（仍受 capability grammar 与门禁约束），`retain` / `storage-*` / `asset-set` 仍只能经 CLI 或 `bash` 调用。
+
+### 4.13 多步任务：goal 闭环
+
+单条命令解决不了的任务（先探测、再备份、失败后修正）用 `goal` 承载。目标、拆解、每次尝试与长期记忆都在控制库里，进程重启后仍在。
+
+```sh
+bkagent goal add --target pg16 --intent '给 app 库做一次可校验的备份' \
+  --steps-json '[{"intent":"探测实例","action":{"command":"inspect","args":[]}},
+                 {"intent":"custom 备份","action":{"command":"backup","args":["--database","app","--out","/backups/app.dump","--format","custom"]},"dependsOn":[1]}]'
+bkagent goal run --goal gol_…            # 逐步执行；失败即停并返回诊断
+bkagent goal diagnose --step stp_…       # 失败签名 + 允许的修复候选
+bkagent goal remediate --step stp_… --kind replan --action-json '{…}'
+```
+
+四条规则决定了它能做什么、不能做什么：
+
+1. **动作只能由 `ACTION_FLAGS` 允许的 flag 组成。** `--yes`、`--db`、`--principal`、`--transport`、`--state-dir` 由核心持有；`--dsn` 不得携带口令——动作会入库并在之后重放，凭据走 `BKAGENT_DSN` / `.pgpass` / peer / GSSAPI。
+2. **破坏性步骤必须人工审批。** `goal approve-step --step … --approver …` 且目标需 `--constraints-json '{"allowDestructive":true}'`；审批之前 `goal run` 不会派发，也不会自动补 `--yes`。
+3. **修复是封闭集。** `diagnose` 给出候选（`retry` / `replan` / `escalate` / `abandon`），`remediate` 只接受其中之一；审批缺失的失败只给 `escalate`，不允许用「换个动作」绕过复核。
+4. **每次执行仍是既有命令。** `goal run` 拼好 argv 后回到同一个 CLI 入口，因此破坏性门禁、租约与 `run-lifecycle` 落库全部照旧，没有第二条执行路径。
+
+记忆由 `goal run` 在每个终态步骤写入，`goal plan` 与 `bk_recall` 读取；检索是确定性的（签名 + 目标 + 词项重合 + 成功先例），同一份记忆必然得到同一份上下文。设计与不变量见 [`agent-loop.md`](agent-loop.md)。
 
 ## 5. 权限与审批
 
@@ -709,6 +739,8 @@ flowchart TD
 资产降级走同一套门禁：生产 → 其他环境、撤销 `--protected`、降低 `criticality` 都算削弱保护，需要 `--yes` 加两条绑定「资产变更 digest」的审批（digest 由拒绝信息打印）。注册新资产不设门槛。
 
 `asset-set --protected` 的 target 在 `retain --apply` 中整目标豁免，apply 直接拒绝（`asset-protected`），这个判定先于 digest 校验。
+
+目标闭环另有一道**步骤级**审批，与上面的计划级门禁叠加而非替代：`goal approve-step` 记录的是「这个人同意执行这一步的动作」，`goal run` 只对已审批的破坏性步骤追加 `--yes`，之后仍要过本节的三重门禁。所以生产环境的恢复需要两道都通过：步骤审批 + 双人复核。审批只能由人在 CLI 完成，模型与 MCP 都没有这条通道（见 §4.13）。
 
 ## 6. 例行运维
 
@@ -818,6 +850,16 @@ ExecStart=/usr/local/bin/bkagent backup --dsn ${BKAGENT_DSN} --database ${BKAGEN
 | `model-policy check` | `--file --task --input-tokens --output-tokens` | — | — |
 | `cost record` | `--task --model --input-tokens --output-tokens` | `--ticket`、`--input-per-1k`、`--output-per-1k`、`--policy` | — |
 | `cost report` | 无 | `--since`（30d） | — |
+| `goal add` | `--target --intent` | `--steps-json\|--steps-file`、`--constraints-json\|--constraints-file`、`--principal` | 拆解含破坏性动作需 `allowDestructive` |
+| `goal plan` | `--goal` | `--steps-json\|--steps-file` | — |
+| `goal next` | `--goal` | — | — |
+| `goal run` | `--goal` | — | 破坏性步骤需先 `goal approve-step` |
+| `goal show` | `--goal` | — | — |
+| `goal list` | 无 | `--state`、`--target`、`--limit` | — |
+| `goal approve-step` | `--step --approver` | `--reason` | 目标需 `allowDestructive` |
+| `goal diagnose` | `--step` | — | — |
+| `goal remediate` | `--step --kind` | `--action-json\|--action-file`、`--reason` | 只能选诊断给出的候选 |
+| `memory search` | 无 | `--target`、`--signature`、`--query`、`--limit` | — |
 
 所有需要控制库的命令都接受 `--db <path>`。`--format` 对 `storage-purge` / `storage-gc` / `artifact-upload` 被接受但不读取，输出恒为 JSON。
 
@@ -843,10 +885,10 @@ ExecStart=/usr/local/bin/bkagent backup --dsn ${BKAGENT_DSN} --database ${BKAGEN
 | 码 | 含义 | 典型场景 |
 |---|---|---|
 | `0` | 成功 | 计划 `succeeded`；dry-run；`providers` 全部就绪；`exec` 远端退出 0 |
-| `1` | 执行失败 | 计划 `failed` / `lease-lost`；`providers` 有 provider 不可用；`verify` 比对失败；`storage-*` 部分对象失败；上传失败；执行接缝拒绝 |
+| `1` | 执行失败 | 计划 `failed` / `lease-lost`；`providers` 有 provider 不可用；`verify` 比对失败；`storage-*` 部分对象失败；上传失败；执行接缝拒绝；`goal run` 某步失败或该步需要人工审批（`approval:required`） |
 | `2` | 显式用法或授权拒绝 | 缺必需参数、`--yes` / `--digest` / `--target` 缺失、digest 不匹配、资产未登记、审批不足、未知命令、`--transport` 用在不支持的命令上 |
 | `3` | 连接失败 | `CONNECT_FAILED`：实例不可达、认证被拒 |
-| `4` | 其余错误 | Plan 校验问题、PITR 越窗、`asset-set` 校验、身份不可证、控制库不可读、风险标签被低估、**参数解析错误（未知选项 / 缺值 / 非法 `--since` / 输入路径不存在）** |
+| `4` | 其余错误 | Plan 校验问题、PITR 越窗、`asset-set` 校验、身份不可证、控制库不可读、风险标签被低估、**参数解析错误（未知选项 / 缺值 / 非法 `--since` / 输入路径不存在）**、目标拆解被拒、修复动作越出候选集、目标或步骤不存在 |
 
 注意 `4` 包含参数解析错误：脚本里若用 `2` 判定「用法错误」，请同时接受 `4`。
 
@@ -854,7 +896,7 @@ ExecStart=/usr/local/bin/bkagent backup --dsn ${BKAGENT_DSN} --database ${BKAGEN
 
 生产使用前应了解的边界，完整清单见 [status.md](status.md) 的「Design items not implemented」：
 
-- E-08 离线验收只覆盖 inspect / backup / verify / report / dashboard，且无独立 `plan` 子命令；E-09 真实模型 E2E 只能手工跑，未接入门禁。
+- E-08 离线验收只覆盖 inspect / backup / verify / report / dashboard，且单命令无独立 `plan` 子命令（多步规划由 `goal plan` 持久化）；E-09 真实模型 E2E 只能手工跑，未接入门禁，也未覆盖闭环轨迹。
 - PITR 只做 LSN 窗口预检；WAL 缺口枚举、跨时间线 `.history` 校验、与 retention 求交集均未实现，也没有真实集群的 PITR 集成用例。
 - 校验分级：V3 业务冒烟用例集缺失；物理备份没有事后 `pg_verifybackup`；没有字节完整性复检命令，`artifact-add` 的等级是自证。
 - 目录形态产物（`pg_dump -Fd`、`pg_basebackup -Fp`）不能上传 Storage；远端产物字节不回传控制面。

@@ -1,29 +1,30 @@
 # 实现状态
 
-范围为**单机本地控制面**。状态与未达成条目以本文件与 `plan-v1.1.md` §22 为准；设计基线见 `../docs/plan-v1.1.md`，架构见 [`architecture.md`](architecture.md)。
+范围为**单机本地控制面**。状态与未达成条目以本文件与 `plan-v1.1.md` §20.1（实现差距）为准；设计基线见 `../docs/plan-v1.1.md`，架构见 [`architecture.md`](architecture.md)。
 
 ## 里程碑
 
 P0–P6 里程碑均已完成：
 
 - P0：领域模型、Plan IR 校验/指纹/重基、`Executor` 端口、SQLite 控制库（Outbox / 租约与 fencing / 对账）、`bkagent inspect`。
-- P0.5：57 条故障目录、15 条本地复现、错误分类与预检规则（[`failure-catalog.md`](failure-catalog.md)）。
+- P0.5：62 条故障目录、15 条本地复现、错误分类与预检规则（[`failure-catalog.md`](failure-catalog.md)）。
 - P1：`pg_dump` / `psql` 逻辑备份与恢复、Step DAG 执行器、恢复校验（临时库行数 + 列/约束/索引 schema 比对 + `amcheck`）、`bkagent backup|restore|verify`。
 - P2：`pg_basebackup` 物理备份、`pg_verifybackup` 完整性校验、PITR 计划（恢复配置、实例启动、promote 断言、失败清理图），`bkagent backup --mode physical` 与 `bkagent pitr`。
 - P3：pgBackRest 与 WAL-G 编排（备份/恢复/校验/expire/delete retain）、`pgbackrest-*` 与 `walg-*` 命令；两条链路均完成真实集群验证（见 [`provider-integration-2026-11-12.md`](provider-integration-2026-11-12.md)）。四个 provider 以 §11 `ProviderAdapter` 契约注册（`native-logical` / `native-physical` / `pgbackrest` / `walg`），`bkagent providers [--dsn …]` 列出描述符并探测工具版本与服务器版本矩阵（见 [`provider-contract.md`](provider-contract.md)）。
 - P4：GFS 保留（可达性分析，按 target 计算）、运行持久化、`catalog` / `retain` / `report` / `metrics` / `capacity` / `watchdog` / `trace` / `notify-test` 命令、systemd 与 cron 模板。`metrics` 输出 §12 的 7 条序列（`bk_ticket_total`、`bk_attempt_duration_seconds`、`bk_backup_bytes_total`、`bk_verify_result_total`、`bk_outbox_lag_seconds`、`bk_stalled_attempts_total`、`bk_rpo_attainment_ratio`），另有 `bk_artifacts_total`、`bk_artifact_bytes_total`、`bk_attempt_errors_total`、`bk_outbox_pending`、`bk_last_artifact_timestamp_seconds`；`watchdog` 在 reconcile 之后评估 P1–P4 告警阶梯并可推送到 webhook 或 SMTP。`retain --apply` 只把符合策略的 catalog 元数据标记为 tombstone（保留行、路径与 lineage，`bytes` 不回收），需绑定 dry-run digest、`--target`、`--yes`，生产 target 另需双人复核；`asset-set --protected` 的 target 整目标豁免且 apply 拒绝；`catalog --history` 可查看含 tombstone 的行（plan 关联行仍可用 `trace`）；字节回收由 `storage-purge`（tombstoned + managed + 超过宽限期 + 无 live 子节点）与 `storage-gc`（无引用且超期对象）执行，两者默认 dry-run，`--apply` 必须绑定 dry-run digest 与 `--yes`，逐条写审计；provider 仓库仍由 `pgbackrest expire` / `wal-g delete retain` 清理。
-- P5：dsh 工具插件（`pg_inspect` / `pg_backup` / `pg_restore` / `pg_verify` / `pg_pitr` / `pg_catalog` / `pg_report` / `kb_search`）、`pg-dba` Preset 与六项技能、安装脚本；工具定义集中在 `tools.js`，同一注册表同时供 dsh 插件与 `bkagent-mcp`（MCP stdio）使用，MCP 下的破坏性工具失败关闭。见 [`dsh-integration.md`](dsh-integration.md)。
+- P5：dsh 工具插件（`pg_inspect` / `pg_backup` / `pg_restore` / `pg_verify` / `pg_pitr` / `pg_catalog` / `pg_report` / `kb_search`）、`pg-dba` Preset 与六项技能、安装脚本；工具定义集中在 `tools.js`，同一注册表同时供 dsh 插件与 `bkagent-mcp`（MCP stdio）使用，MCP 下的破坏性工具失败关闭。见 [`dsh-integration.md`](dsh-integration.md)。同一注册表另暴露目标/记忆闭环的四个工具（`bk_goal` / `bk_step_run` / `bk_remediate` / `bk_recall`）：拆解、进度与记忆落控制库，步骤审批只能在 CLI 侧由人工完成，见 [`agent-loop.md`](agent-loop.md)。
 - P6：只读 Web 面板（`bkagent dashboard --out|--serve`）：汇总卡片、产物时间线、校验状态、执行记录与过滤；自包含 HTML，无外部资源。
 
-此外实现了一个不属于 P0–P6 里程碑的知识包 `@backup-agent/knowledge`：SAG2 证据检索（SQLite FTS5 + BM25、别名词典、逐轮重排、`primary`/`evidence` 分层）、可插拔打分后端（`lexical` / `command` / `http`，协商失败关闭）、108 题评测集（R@10 50.01%）。它只服务文档问答与排障导航，不参与 Plan 生成。见 [`knowledge-baseline.md`](knowledge-baseline.md)。
+此外实现了一个不属于 P0–P6 里程碑的知识包 `@backup-agent/knowledge`：SAG2 证据检索（SQLite FTS5 + BM25、别名词典、逐轮重排、`primary`/`evidence` 分层）、可插拔打分后端（`lexical` / `command` / `http`，协商失败关闭）、108 题评测集（R@10 49.08%）。它只服务文档问答与排障导航，不参与 Plan 生成。见 [`knowledge-baseline.md`](knowledge-baseline.md)。
 
 ## 验收项
 
-`pnpm test` 为 61 个测试文件 / 682 个用例，`pnpm -r typecheck` 全部通过。
+`pnpm test` 为 70 个测试文件 / 837 个用例，`pnpm -r typecheck` 全部通过。
 
 - **E-01 至 E-07、E-10**：有实现与测试证据。E-01 的可追溯性落在数据面（`AssetDescriptor` + Plan/Attempt/Artifact + `trace` 血缘），模型自然语言结论本身不做机器校验。E-03 的越权处置是「拒绝并写 `authorization.denied` 审计事件」，权限本身由 principal 的数据库凭据与操作系统身份承担。E-05 见 [`trace-drill.md`](trace-drill.md)，E-04 见 [`injection-drill.md`](injection-drill.md) 与 `packages/engine-postgres/test/injection.integration.test.ts`，E-07 由 `pnpm verify:skills` 的 MANIFEST 哈希守护。E-10 的审批按操作系统身份去重，同一 OS 用户无法用两个标签满足双人复核。
-- **E-08**：`scripts/offline-drill.sh` 覆盖 inspect / backup / verify / report / dashboard，**部分达成**——CLI 没有独立 `plan` 子命令（规划内嵌于各命令），演练也未覆盖受控恢复（[`offline-acceptance.md`](offline-acceptance.md) §Not covered）。
+- **E-08**：`scripts/offline-drill.sh` 覆盖 inspect / backup / verify / report / dashboard，**部分达成**——单命令没有独立 `plan` 子命令（规划内嵌于各命令；多步规划由 `goal plan` 持久化，见 [`agent-loop.md`](agent-loop.md)），演练也未覆盖受控恢复与目标闭环（[`offline-acceptance.md`](offline-acceptance.md) §Not covered）。
 - **E-09**：真实模型 E2E 有 2026-11-12 的成功记录（[`e2e-agent.md`](e2e-agent.md)），但只能手工执行 `scripts/e2e-agent.mjs`，**未接入任何发布准入检查**，因此不满足「全部通过方可发版」。
+- **闭环（Goal/Step/Action/Memory）**：有单测与针对真实 PostgreSQL 的集成用例（`packages/cli/test/goal.integration.test.ts` 覆盖成功路径、permanent 失败→`replan`→成功、未审批破坏性步骤被拒三条路径），`dist/bkagent.mjs` 与 MCP 入口也已手工验证。但**没有**由真实模型驱动这条闭环的 E2E；E-09 仍只覆盖单命令轨迹，闭环的模型侧行为没有回归门禁。
 
 ## 巡检既有资产（含非 agent 产物）
 
@@ -53,5 +54,5 @@ P0–P6 里程碑均已完成：
 - **兼容矩阵**：PG14–17 × 四类 provider 的夜间矩阵未接入 CI，实测环境为 PG16/17，provider 链路为手工验证。
 - **质量准入检查**：语句/分支覆盖率、变异得分、不稳定用例率没有对应工具执行；故障注入（F-01–F-06）只有错误分类单测，混沌与状态机模型检验未做。`Executor` 共享契约套件目前只由 `LocalExecutor` 复用（C-02 断言 env 透传，与远端不转发 env 的设计冲突），`ssh` / `kubectl` 只有各自的传输用例。
 - **凭据**：`secretRef` 只是方案 §10 的目标，代码中没有对应类型或字段；实际实现是子进程环境变量 + principal 注册表里的 `dsnEnv`。
-- **P5 工具面**：provider 类命令（`pgbackrest-*` / `walg-*` / `retain` / `metrics` / `storage-*` 等）仍只经 CLI 或 `bash` 调用；MCP 无审批通道，因此 MCP 下不能执行恢复。
+- **P5 工具面**：provider 类命令仍未各自暴露为一等工具；其中 `pgbackrest-*` / `walg-*` / `metrics` / `asset-list` / `asset-rpo` 已进入 `ACTION_COMMANDS`，可由 `goal` 步骤派发，`retain` / `storage-*` / `asset-set` 仍只经 CLI 或 `bash` 调用。MCP 无审批通道，因此 MCP 下不能执行恢复。
 - **远端目标**：SSH/kubectl 执行器与传输已验证，但 10.1.31.125 尚未安装 PostgreSQL，远程数据库目标与 rustfs S3 目标仍待环境侧推进。

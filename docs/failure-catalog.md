@@ -16,8 +16,8 @@
 | R | 恢复 | 12 | 3 |
 | P | 时间点恢复 | 8 | 2 |
 | V | 校验 | 8 | 2 |
-| A | Agent 层 | 8 | 2 |
-| **合计** | | **57** | **15** |
+| A | Agent 层 | 13 | 2 |
+| **合计** | | **62** | **15** |
 
 复现证据见 [`failure-catalog/evidence-2026-11-11.md`](failure-catalog/evidence-2026-11-11.md)。复现状态：`R` = 本地复现；`D` = 文献级（desk），尚未复现。
 
@@ -107,6 +107,11 @@
 | A-06 | 审批绕过（风险越权） | `risk exceeds the Mandate allowance` | PERMISSION | manual | D |
 | A-07 | 非零退出被误判为成功 | 执行器退出码契约失败 | C-03 契约 | permanent | D |
 | A-08 | 幂等键重复导致重复副作用 | Outbox 去重命中 | 幂等键 | manual | D |
+| A-09 | 目标拆解越界（步数超限、序号重复、依赖指向更晚的步骤） | `validateDecomposition` 返回 `DecompositionIssue` | 拆解校验 | permanent | R（单测） |
+| A-10 | 动作超出 capability grammar（`--yes` / `--db` / `--principal` / 未声明 flag / 带口令的 `--dsn`） | `validateStepAction` 返回 `ActionIssue` | 动作校验 | permanent | R（单测） |
+| A-11 | 未审批的破坏性步骤 | 签名 `approval:required`，候选集只有 `escalate` | 目标审批 | manual | R（单测 + 集成） |
+| A-12 | 运行中断后步骤仍停在 `running` | 签名 `stalled`，候选 `replan` / `escalate` | 启动恢复 | permanent | R（单测） |
+| A-13 | 修复动作越出封闭集或破坏性未开启 | `decideRemediation` 返回 `{ok:false, reason}` | 修复校验 | permanent | R（单测） |
 
 ## 8. 已复现条目详情
 
@@ -138,8 +143,18 @@
 | PITR 目标不可达、目标早于一致点、WAL 缺口 | manual | 不重试，需人工确认目标 |
 | `pg_verifybackup` 摘要/文件缺失 | manual | 不重试，产物标记不可用 |
 | 磁盘/inode 耗尽 | manual | 不自动重试，清理后重建计划 |
+| `approval:required`（目标步骤未审批） | manual | 不重试，转人工；候选集只有 `escalate` |
+| `stalled`（运行中断后仍停在 `running`） | permanent | 不派发；候选 `replan` / `escalate` |
+| `usage:invalid-action`（动作越出 capability grammar） | permanent | 修正动作后 replan |
 
 实现位置：`packages/core/src/executor/classify.ts`；新增签名须同步补充单测。
+
+该文件同时提供两个供目标闭环使用的函数：
+
+- `failureSignature(result)` 返回**稳定签名**（`auth:password`、`sqlstate:42P01`、`connect:refused`…），作为 `step_attempts.signature` 与长期记忆的键，因此改动签名等于改动记忆格式。
+- `classifyStepFailure(result)` 为失败的一步定类：stderr 命中目录签名时以目录为准，只有 stderr 无可识别签名时才按 CLI 退出码推断（`3` 连接失败、`2` 用法、`4` plan 被拒）。这样 `password authentication failed` 不会因为退出码是 3 而被误判为可重试。
+
+`goal run` 优先采用内层命令 JSON 信封里的 `result.errorClass` 与该步真实 stderr；只有信封不可解析时才退回 `classifyStepFailure`。理由是内层命令把步骤级 stderr 写在 stdout 的 JSON 里，外层 stderr 只有进度行。
 
 ## 10. 预检规则清单
 

@@ -2,7 +2,7 @@
 
 本仓库提供一个 dsh Agent Preset 与一个 Cordis 工具插件：
 
-- Preset：`presets/pg-dba/`（persona、工具行、六项技能）
+- Preset：`packages/dsh-plugin/cordis.patch.yml`（实际挂载的 bundle patch 行 `preset-pg-dba`）；`presets/pg-dba/` 保存 persona 副本与六项技能，需与 patch 手工同步
 - 插件：`packages/dsh-plugin/`（`@backup-agent/dsh-plugin`）
 - CLI 单文件包：`dist/bkagent.mjs`（`pnpm build:cli` 生成）
 
@@ -48,19 +48,36 @@ dsh --profile web --no-open        # 设置 → Agent 预设 → 自定义：Pos
 | 工具 | 作用 | 风险 |
 |---|---|---|
 | `pg_inspect` | 实例版本、角色、WAL、归档、数据库清单 | 只读 |
-| `pg_backup` | 逻辑/物理备份，可写控制库 | 只读 |
+| `pg_backup` | 逻辑/物理备份，可写控制库 | 只读（写控制库） |
 | `pg_restore` | 逻辑恢复；所有输入均按可能含破坏性 SQL 处理并走审批 | 破坏性 |
 | `pg_verify` | 恢复到临时库并比对行数、schema、amcheck | 可逆 |
 | `pg_pitr` | 按 time/LSN/name/xid 恢复到目标数据目录；先经 `ctx.approval` | 破坏性 |
 | `pg_catalog` | 备份产物清单 | 只读 |
 | `pg_report` | 运行报表 | 只读 |
 | `kb_search` | 在 SAG2 证据库中检索原文段落（source#ordinal + 标题路径） | 只读 |
+| `bk_goal` | 目标与步骤：`open` / `plan` / `next` / `status` / `diagnose` | 写控制库（不触目标实例） |
+| `bk_step_run` | 执行目标中的下一个可运行步骤 | 随步骤而定；破坏性步骤须先有人工审批 |
+| `bk_remediate` | 按诊断候选集修订单个失败步骤（`retry` / `replan` / `escalate` / `abandon`） | 写控制库（`replan` 替换该步动作） |
+| `bk_recall` | 检索该目标与失败签名的历史记忆（成功先例与教训） | 只读 |
 
 每次 `pg_restore` 调用都会先调用 `ctx.approval.request()`；即使没有 `createDatabase` 或 `clean`，转储输入也可能含有 `DROP` 等破坏性 SQL。没有发起主体或审批服务不可用时**失败关闭**。CLI 还会要求精确登记 Asset、`--yes`，并对生产目标执行双人复核。
 
 工具调用携带的取消信号会透传到后端进程：工具被取消时 `spawn` 以 `signal` 中止，不会留下无人等待的备份进程。`kb_search` 的 query 放在 `--` 之后，因此以 `-` 开头的问题（例如「为什么 `--type=time` 不生效」）不会被当成选项。
 
-pgBackRest / WAL-G 与运维类命令（`pgbackrest-*` / `walg-*` / `retain` / `metrics` / `storage-*`）尚未暴露为工具，`pg-pitr` 之外的运维技能仍只能经 `bash` 调用 CLI，这是 P5 的已知缺口。
+pgBackRest / WAL-G 与运维类命令（`pgbackrest-*` / `walg-*` / `retain` / `metrics` / `storage-*`）没有各自的一等工具，`pg-pitr` 之外的运维技能仍只能经 `bash` 调用 CLI，这是 P5 的已知缺口。目标闭环不改变这一点：`ACTION_FLAGS` 允许把 `pgbackrest-*` / `walg-*` 作为**步骤动作**执行（因此走同一门禁与落库），`retain` / `storage-*` 则完全不在动作文法内。
+
+## 目标闭环
+
+四个工具把「拆解、进度、失败、记忆」落到控制库，而不是留在会话上下文里（设计见 [agent-loop.md](agent-loop.md)）：
+
+1. `bk_goal` op `open` 用操作者原话与显式拆解建立目标；`op plan` 提交或修订拆解（步数上限、序号唯一、依赖只能指向更早步骤、动作须通过 capability grammar，任一不满足即拒绝）。`steps` 的元素形状是封闭的：`intent`、`action{command,args}`、`dependsOn`（1 基序号）、`maxAttempts`；`command` 的枚举镜像 `packages/core/src/domain/action.ts` 的 `ACTION_COMMANDS`，核心仍会重校验每个动作，所以枚举漂移只会缩小工具可提议的动词，不会放宽控制面接受的范围。
+2. `bk_recall` 在选策略前检索该目标与失败签名的历史记忆。评分是确定性的（签名精确匹配、同目标、文本重合、成功先例），没有向量检索，也没有模型参与。
+3. `bk_step_run` 执行下一个可运行步骤；失败时 `bk_goal` op `diagnose` 返回错误类、稳定签名与**封闭候选集**，`bk_remediate` 只接受集合内的选择。
+4. `replan` 是原地修订：替换该步动作，保留历史尝试与尝试预算，不重连 DAG。
+
+**审批只能在 CLI 侧由人工完成。** 注册表里没有、也不会有 `approve-step` 工具：没有能批准步骤的工具，任何破坏性步骤都无法仅凭模型或 MCP 变成可运行状态。因此 `bk_step_run` 不标记为 `requiresApproval`——它本身不授权任何东西，把它标成破坏性只会连带拦掉只读步骤，而不会增加安全性。
+
+`bk_step_run` 不是新的执行入口：它经同一条 `bkagent` 入口派发步骤的内层命令，argv 仍由控制面按动作拼装，所以 `destructive-gate`（Asset 登记、身份证明、生产双人复核）、租约与 fencing、`audit.run` 的 run-lifecycle 落库全部照旧生效。目标层只额外写自己的四张表。
 
 ## 技能
 

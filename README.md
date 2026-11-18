@@ -42,6 +42,7 @@ templates; fleet-wide orchestration is out of scope.
 | Alerting | `watchdog` | P1–P4 ladder after reconciliation; webhook or SMTP |
 | Read-only panel | `dashboard --out\|--serve` | Self-contained HTML, `127.0.0.1` only when served |
 | Agent surface | dsh plugin, `pg-dba` preset, `bkagent-mcp` | One tool registry feeds both the dsh plugin and the MCP server |
+| Goal loop | `goal`, `memory` | Durable goal, step decomposition, closed-set remediation and deterministic memory; destructive steps need a human approval the agent cannot give itself |
 | Document retrieval | `@backup-agent/knowledge` | SAG2 evidence retrieval for operational Q&A; never generates plans |
 
 ## Requirements
@@ -93,6 +94,7 @@ Grouped by job — full reference, gates and worked examples in
 - Observe: `report`, `metrics`, `capacity`, `watchdog`, `dashboard`, `notify-test`.
 - Dispatch and approve: `outbox-dispatch`, `approve`, `approvals`.
 - Run raw provider commands: `exec -- <argv>`.
+- Multi-step tasks: `goal`, `memory`.
 
 Exit codes: `0` success, `1` execution failure, `2` usage, `3` connection
 failure, `4` plan or probe failure.
@@ -128,13 +130,15 @@ failure, `4` plan or probe failure.
 ```
 packages/
   core/                 @backup-agent/core (zero runtime dependencies)
-    src/domain/         identifiers, risk, capabilities, assets, principals, Plan, state machine
+    src/domain/         identifiers, risk, capabilities, assets, principals, Plan, state machine,
+                        capability grammar (action), goal/step state machine (goal), closed-set remediation (remediation)
     src/ports/          Executor / Repository / Engine / Provider / Storage / Clock
     src/plan/           validation, fingerprints, rebase
     src/executor/       local / ssh / kubectl executors, POSIX quoting, error classification
     src/runner/         predicate evaluation, Step DAG execution (incl. cleanup graph), retries, checkpoints
     src/security/       destructive authorization, four-eyes, asset downgrade, principal registry
-    src/ops/            retention, reporting, metrics, capacity, alerting, notification, artifact summaries and GC
+    src/ops/            retention, reporting, metrics, capacity, alerting, notification, artifact summaries and GC,
+                        goal decomposition and scheduling (goal-plan), deterministic memory recall (memory)
     src/storage/        fs / nfs / s3 (SigV4, no SDK)
     src/persistence/    SQLite control database, Outbox dispatch, leases, reconciliation, run lifecycle
     src/testkit/        FakeExecutor, FixedClock
@@ -202,7 +206,8 @@ calls `dist/bkagent.mjs` by default, override with `BKAGENT_CLI`).
 | Architecture, execution / storage / notification, authorization gates, Outbox | [`docs/architecture.md`](docs/architecture.md) |
 | §11 engine/provider contract and the four providers | [`docs/provider-contract.md`](docs/provider-contract.md) |
 | dsh plugin, preset, MCP entry point | [`docs/dsh-integration.md`](docs/dsh-integration.md) |
-| Failure-mode catalog (57 entries) | [`docs/failure-catalog.md`](docs/failure-catalog.md) |
+| Agent loop: Goal / Step / Action / Memory | [`docs/agent-loop.md`](docs/agent-loop.md) |
+| Failure-mode catalog (62 entries) | [`docs/failure-catalog.md`](docs/failure-catalog.md) |
 | Read-only panel | [`docs/dashboard.md`](docs/dashboard.md) |
 | Evidence-retrieval baseline and evaluation | [`docs/knowledge-baseline.md`](docs/knowledge-baseline.md) |
 | Drill records (E-04 / E-05 / E-08 / E-09) | [`docs/injection-drill.md`](docs/injection-drill.md), [`docs/trace-drill.md`](docs/trace-drill.md), [`docs/offline-acceptance.md`](docs/offline-acceptance.md), [`docs/e2e-agent.md`](docs/e2e-agent.md) |

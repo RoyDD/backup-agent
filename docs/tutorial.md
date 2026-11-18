@@ -12,7 +12,7 @@ tags:
 
 本文以一个可复现的演示库为对象，按顺序执行 bkagent 的最小闭环：探测实例、登记资产、产出备份、校验恢复点、通过门禁恢复、查看台账与告警。每一步都给出实际执行的命令与真实输出，并说明这一步为什么必须存在。
 
-适合两类读者：首次接触本项目、需要在本机完成端到端验证的 DBA；以及评估该链路是否满足生产要求的评审者。命令参数、门禁细则与全部 34 条命令的参考手册见 [usage.md](usage.md)，设计原理见 [architecture.md](architecture.md)；本教程只覆盖主线与常见分支。
+适合两类读者：首次接触本项目、需要在本机完成端到端验证的 DBA；以及评估该链路是否满足生产要求的评审者。命令参数、门禁细则与全部 36 条命令的参考手册见 [usage.md](usage.md)，设计原理见 [architecture.md](architecture.md)；本教程只覆盖主线与常见分支。
 
 源码仓库：[RoyDD/backup-agent](https://github.com/RoyDD/backup-agent)。本教程的 Markdown 源文件为 [`docs/tutorial.md`](https://github.com/RoyDD/backup-agent/blob/main/docs/tutorial.md)，单页版为 [`docs/tutorial.html`](https://github.com/RoyDD/backup-agent/blob/main/docs/tutorial.html)；文中提到的命令、脚本与插件均可在该仓库对应路径下查阅。
 
@@ -475,7 +475,7 @@ bkagent watchdog
 
 ## 10. 进阶：三条继续往前的路
 
-主线验证通过后，按目标从下列三条路径中选择一条继续，无需逐条阅读 34 条命令。
+主线验证通过后，按目标从下列三条路径中选择一条继续，无需逐条阅读 36 条命令。
 
 ```mermaid
 flowchart TD
@@ -513,12 +513,13 @@ dsh --version                       # 需要 0.2.x；本文验证于 0.2.2-rc.4
 bash scripts/install-dsh.sh web     # 或指定其他 profile 名
 ```
 
-脚本执行四个步骤：
+脚本执行三个步骤：
 
 1. `pnpm build:cli`、`pnpm build:knowledge` 产出两个单文件包；
 2. `var/knowledge.sqlite` 不存在时重建知识索引；
-3. `dsh plugin --profile web add link:<repo>/packages/dsh-plugin`；插件声明了 `dsh.bundle`，`add` 会同时把它写入 profile 的 bundle 列表；
-4. 预设随补丁层挂载，不再复制目录。
+3. `dsh plugin --profile web add link:<repo>/packages/dsh-plugin`；插件声明了 `dsh.bundle`，`add` 会同时把它写入 profile 的 bundle 列表。
+
+预设随补丁层挂载，不再复制目录。
 
 以下两项验证缺一不可：
 
@@ -529,7 +530,7 @@ dsh --profile web --no-open                                # 设置 → Agent �
 
 ![dsh 设置页中的自定义预设](assets/tutorial/13-dsh-preset.jpg)
 
-设置页出现「自定义 / PostgreSQL 备份恢复」，且没有「加载失败」，说明预设内每一行（persona、`@backup-agent/dsh-plugin`、技能目录）都已激活；此后新建会话并选用该预设，即可使用 `pg_inspect`、`pg_backup`、`pg_restore`、`pg_pitr`、`pg_verify`、`pg_catalog`、`pg_report` 与 `kb_search`。
+设置页出现「自定义 / PostgreSQL 备份恢复」，且没有「加载失败」，说明预设内每一行（persona、`@backup-agent/dsh-plugin`、技能目录）都已激活；此后新建会话并选用该预设，即可使用 `pg_inspect`、`pg_backup`、`pg_restore`、`pg_pitr`、`pg_verify`、`pg_catalog`、`pg_report` 与 `kb_search`，以及闭环工具 `bk_goal`、`bk_step_run`、`bk_remediate`、`bk_recall`。
 
 安装过程中实际遇到的三个问题：
 
@@ -609,6 +610,17 @@ bkagent restore --dsn 'postgres://<user>@127.0.0.1:5432/postgres' \
 # 6. 观测
 bkagent watchdog
 bkagent dashboard --out /var/www/bkagent.html
+
+# 7. 多步任务（可选）：目标闭环
+bkagent goal add --target 127.0.0.1:5432/<db> \
+  --intent '备份并校验 app 库' \
+  --steps-json '[{"intent":"探测","action":{"command":"inspect","args":[]}},
+                 {"intent":"备份","action":{"command":"backup","args":["--database","<db>","--out","/var/backups/<db>.dump","--format","custom"]},"dependsOn":[1]},
+                 {"intent":"校验","action":{"command":"verify","args":["--input","/var/backups/<db>.dump","--database","<db>"]},"dependsOn":[2]}]'
+bkagent goal run --goal <goalId>          # 逐步执行；失败即停并返回诊断
+bkagent goal diagnose --step <stepId>     # 失败签名 + 允许的修复候选
+bkagent goal remediate --step <stepId> --kind replan --action-json '{…}'
+bkagent memory search --target 127.0.0.1:5432/<db>
 ```
 
 ## 13. 这份教程验证到什么程度
@@ -618,6 +630,7 @@ bkagent dashboard --out /var/www/bkagent.html
 | 内容 | 状态 |
 |---|---|
 | `inspect`、`providers`、`asset-set`、`backup --mode logical`、`verify`、`catalog`、`asset-rpo`、`report`、`metrics`、`restore`（含三次门禁拒绝与一次通过）、`approve`、`approvals`、`watchdog`、`dashboard --out` | 在本地 PostgreSQL 16.15 上实际执行，输出为真实回显 |
+| `goal add` / `goal run` / `goal diagnose` / `goal remediate` / `memory search` | 在本地 PostgreSQL 16.15 上实际执行：两步目标成功、permanent 失败 → `replan` → 成功、未审批破坏性步骤在派发前被拒。**未经模型驱动**——闭环的工具轨迹没有 E2E 覆盖 |
 | dsh 0.2.2-rc.4 安装、插件挂载与 `pg-dba` 预设 | 已执行：`--dump-config` 出现 `preset-pg-dba`，设置页显示「自定义 / PostgreSQL 备份恢复」且无加载失败；未用模型实际发起一次会话 |
 | 双人复核的**通过态** | 未演示：需要第二个操作系统用户执行 `approve`，本教程只展示 `distinct: 1` 的拒绝与自审被忽略 |
 | `--transport ssh` / `--transport kubectl`、物理备份、PITR、`pgbackrest-*`、`walg-*`、`retain`、MCP 入口 | 未执行，只给入口与前置条件 |

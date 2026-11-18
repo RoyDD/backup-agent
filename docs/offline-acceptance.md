@@ -40,10 +40,16 @@ HTTP listener is `dashboard --serve`, which binds `127.0.0.1`.
 
 ## Not covered
 
-- `plan`: the CLI has no standalone `plan` verb; planning is implicit in each
-  command (`backup`, `restore`, `pitr`, provider commands) and validated before
-  execution. E-08's "plan" step is therefore exercised indirectly, not as a
-  separate offline command.
+- `plan`: the CLI has no standalone `plan` verb for a single command; planning is
+  implicit in each command (`backup`, `restore`, `pitr`, provider commands) and
+  validated before execution. Multi-step planning is a separate, persisted object
+  (`bkagent goal plan`, table `goal_steps`). E-08's "plan" step is therefore
+  exercised indirectly, not as a separate offline command, and the goal path is
+  not part of the drill.
+- Goal loop: `goal` / `memory` are not part of the drill. They add no network
+  dependency of their own — `goal run` re-enters the same CLI entry point, so it
+  inherits whatever the underlying command does — but offline acceptance does not
+  yet assert a multi-step goal.
 - Controlled restore: the drill never runs `restore`/`pitr`, so the destructive
   path under no-network conditions is asserted by design (argv-only local
   executor, no outbound HTTP) rather than by this script.

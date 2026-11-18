@@ -32,6 +32,7 @@ PostgreSQL 备份、校验与恢复的确定性控制面，外层是面向智能
 | 告警 | `watchdog` | 对账后评估 P1–P4 告警阶梯；webhook 或 SMTP |
 | 只读面板 | `dashboard --out\|--serve` | 自包含 HTML；serve 模式只绑定 `127.0.0.1` |
 | 智能体面 | dsh 插件、`pg-dba` preset、`bkagent-mcp` | 一份工具注册表同时供 dsh 插件与 MCP 服务使用 |
+| 闭环 | `goal`、`memory` | 目标、步骤拆解、封闭集修复与确定性记忆落控制库；破坏性步骤需人工审批，智能体无法自行放行 |
 | 文档检索 | `@backup-agent/knowledge` | SAG2 证据检索，服务运维问答；不参与 Plan 生成 |
 
 ## 环境要求
@@ -75,6 +76,7 @@ node dist/bkagent.mjs catalog
 - 观测：`report`、`metrics`、`capacity`、`watchdog`、`dashboard`、`notify-test`。
 - 派发与审批：`outbox-dispatch`、`approve`、`approvals`。
 - 直接执行 provider 命令：`exec -- <argv>`。
+- 多步任务：`goal`、`memory`。
 
 退出码：`0` 成功、`1` 执行失败、`2` 用法错误、`3` 连接失败、`4` plan 或 probe 失败。
 
@@ -95,13 +97,15 @@ node dist/bkagent.mjs catalog
 ```
 packages/
   core/                 @backup-agent/core（零运行时依赖）
-    src/domain/         标识、风险、能力、资产、主体、模型策略、Plan、状态机
+    src/domain/         标识、风险、能力、资产、主体、模型策略、Plan、状态机、
+                        能力文法（action）、目标/步骤状态机（goal）、封闭修复集（remediation）
     src/ports/          Executor / Repository / Engine / Provider / Storage / Clock
     src/plan/           校验、指纹、重基
     src/executor/       local / ssh / kubectl 执行器、POSIX 引号、错误分类
     src/runner/         谓词求值、Step DAG 执行（含 cleanup 图）、重试、检查点
     src/security/       破坏性授权、four-eyes、资产降级、principal 注册表
-    src/ops/            保留、报表、指标、容量、告警、通知、artifact 摘要与 GC
+    src/ops/            保留、报表、指标、容量、告警、通知、artifact 摘要与 GC、
+                        目标拆解与调度（goal-plan）、确定性记忆检索（memory）
     src/storage/        fs / nfs / s3（SigV4，无 SDK）
     src/persistence/    SQLite 控制库、Outbox 派发、租约、对账、运行生命周期
     src/testkit/        FakeExecutor、FixedClock
@@ -161,7 +165,8 @@ MCP 入口：`node packages/dsh-plugin/mcp.js`（`bin` 名 `bkagent-mcp`，默�
 | 架构、执行/存储/通知、授权检查、Outbox | [`docs/architecture.md`](docs/architecture.md) |
 | §11 引擎/provider 契约与四个 provider | [`docs/provider-contract.md`](docs/provider-contract.md) |
 | dsh 插件、preset、MCP 入口 | [`docs/dsh-integration.md`](docs/dsh-integration.md) |
-| 故障模式目录（57 条） | [`docs/failure-catalog.md`](docs/failure-catalog.md) |
+| 智能体闭环：Goal / Step / Action / Memory | [`docs/agent-loop.md`](docs/agent-loop.md) |
+| 故障模式目录（62 条） | [`docs/failure-catalog.md`](docs/failure-catalog.md) |
 | 只读面板 | [`docs/dashboard.md`](docs/dashboard.md) |
 | 证据检索基线与评测 | [`docs/knowledge-baseline.md`](docs/knowledge-baseline.md) |
 | 演练记录（E-04 / E-05 / E-08 / E-09） | [`docs/injection-drill.md`](docs/injection-drill.md)、[`docs/trace-drill.md`](docs/trace-drill.md)、[`docs/offline-acceptance.md`](docs/offline-acceptance.md)、[`docs/e2e-agent.md`](docs/e2e-agent.md) |

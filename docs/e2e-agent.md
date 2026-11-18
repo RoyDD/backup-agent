@@ -16,6 +16,16 @@ E2E drives a web session through the `/api` RPC:
 The script temporarily patches the web profile's default preset to `pg-dba` and
 restores the patch in `finally`. It never edits `settings.yaml`.
 
+## Known staleness in this harness
+
+The script copies `presets/pg-dba/` to `$DSH_HOME/.agent-presets/pg-dba`, a path
+dsh 0.2.x no longer reads. The preset that actually mounts comes from the
+plugin's bundle patch (`packages/dsh-plugin/cordis.patch.yml`), which
+`dsh plugin add` inserts. The copy is therefore vestigial: it does not make the
+run wrong, but it also does not install the preset, and editing
+`presets/pg-dba/agent.cordis.yml` alone would not change what the model sees.
+Keep the two persona copies in sync until the harness is fixed.
+
 ## Run
 
 ```sh
@@ -59,3 +69,24 @@ The run also surfaced two preset defects that were fixed:
   fails to mount (`agent-presets: preset "pg-dba" failed to mount`).
 - `pg_backup` now always passes a control DB, matching `pg_restore` and
   `pg_catalog`, so artifacts are recorded without an explicit argument.
+
+## Not covered
+
+The recorded run predates the goal loop (`bk_goal` / `bk_step_run` /
+`bk_remediate` / `bk_recall`, see [agent-loop.md](agent-loop.md)), so **no model
+has ever driven that loop**. E-09 asserts a single-command trajectory
+(`pg_inspect` → `pg_backup` → `pg_verify`); it says nothing about whether a
+model opens a goal, proposes a valid decomposition, chooses from a closed
+remediation set, or asks a human to approve a destructive step.
+
+The loop's own behaviour is covered without a model:
+
+- `packages/cli/test/goal.test.ts` — decomposition, scheduling, retry,
+  remediation, approval refusal, crash recovery (fake executor).
+- `packages/cli/test/goal.integration.test.ts` — success, permanent failure →
+  `replan` → success, and unapproved destructive step refused before dispatch,
+  all against the live PostgreSQL 16 instance.
+
+Closing the gap means extending this script to assert a goal trajectory
+(`bk_goal` op `open` → `bk_step_run` → `bk_goal` op `diagnose`), which would also
+give the loop the regression gate it currently lacks.
