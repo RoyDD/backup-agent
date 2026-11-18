@@ -14,6 +14,8 @@ no safety policy.
 
 It is not a scheduler, and it is not a shell wrapper around `pg_dump`.
 
+**Start here: [bkagent tutorial](docs/tutorial.html)** (illustrated, end-to-end walkthrough; Markdown source in [`docs/tutorial.md`](docs/tutorial.md)).
+
 - Design baseline: `../docs/plan-v1.1.md` (kept outside Git; v1.0 is archived there).
 - Architecture and execution flow: [`docs/architecture.md`](docs/architecture.md).
 - Operator manual (command map, walkthroughs, troubleshooting): [`docs/usage.md`](docs/usage.md).

@@ -8,6 +8,8 @@ PostgreSQL 备份、校验与恢复的确定性控制面，外层是面向智能
 
 它不是调度器，也不是 `pg_dump` 的 shell 封装。
 
+**从这里开始：[bkagent 使用教程](docs/tutorial.html)**（图文版，完整闭环实操；Markdown 源文件见 [`docs/tutorial.md`](docs/tutorial.md)）。
+
 - 设计基线：`../docs/plan-v1.1.md`（未纳入 Git；v1.0 在同一个目录存档）。
 - 架构与执行流程：[`docs/architecture.md`](docs/architecture.md)。
 - 使用手册（命令地图、场景实操、排障）：[`docs/usage.md`](docs/usage.md)。

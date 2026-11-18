@@ -2,6 +2,8 @@
 
 本手册面向在单机或远端 PostgreSQL 实例上执行备份、校验、恢复与巡检的 DBA。内容包括命令入口、门禁条件、可验证的实操示例与排障路径；设计原理与未达成条目不在本文件展开，见 [architecture.md](architecture.md) 与 [status.md](status.md)。
 
+首次接触本项目时，建议先阅读 [tutorial.md](tutorial.md)：该教程以一个可复现的演示库为对象，依次执行「探测 → 登记 → 备份 → 校验 → 恢复 → 观测」，并说明每一步的必要性。本文件是参考手册，回答「某条命令有哪些参数、门禁如何计算」。
+
 约定：
 
 - 命令统一以 `bkagent` 表示。开发态用 `pnpm bkagent`，发布产物为 `node dist/bkagent.mjs`，两者参数完全一致。
