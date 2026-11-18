@@ -10,6 +10,8 @@
 
 ## 安装
 
+前置：dsh 0.2.x（本文按 `0.2.2-rc.4` 验证，`dsh --version` 可查当前版本）。
+
 ```sh
 scripts/install-dsh.sh web
 ```
@@ -18,10 +20,24 @@ scripts/install-dsh.sh web
 
 1. `pnpm build:cli` 生成 `dist/bkagent.mjs`，`pnpm build:knowledge` 生成 `dist/bkagent-knowledge.mjs`；
 2. `var/knowledge.sqlite` 不存在时执行 `pnpm --filter @backup-agent/knowledge index`；
-3. 复制 preset 到 `${DSH_HOME:-~/.dsh}/.agent-presets/pg-dba`；
-4. `dsh plugin --profile web add link:<repo>/packages/dsh-plugin`。
+3. `dsh plugin --profile web add link:<repo>/packages/dsh-plugin`。
 
-重启 dsh 后，在会话创建时选择「PostgreSQL 备份恢复」预设。
+插件包声明了 `dsh.bundle`，`add` 会把它写进 profile 的 `dsh.profile.bundles`，并按 `cordis.patch.yml` 插入一条 `@deepseek-ai/dsh-agent-preset` 行：`pg-dba` 预设的 persona、工具行与六项技能都在这一行内，不再复制到 `$DSH_HOME/.agent-presets/`。
+
+验证：
+
+```sh
+dsh --profile web --dump-config | grep -A2 preset-pg-dba
+dsh --profile web --no-open        # 设置 → Agent 预设 → 自定义：PostgreSQL 备份恢复
+```
+
+`--dump-config` 出现 `preset-pg-dba` 说明补丁层已生效；设置页出现「自定义 / PostgreSQL 备份恢复」且没有「加载失败」，说明预设内每一行（含 `@backup-agent/dsh-plugin`）都已激活。
+
+### 从 0.1.x 升级
+
+- `$DSH_HOME/.agent-presets/<id>/` 在 0.2.x 不再被读取；预设只能来自 bundle patch 里的 `@deepseek-ai/dsh-agent-preset` 行。
+- 只执行 `dsh plugin add` 而不声明 `dsh.bundle` 的包，只会成为普通依赖，不会产生任何配置层，工具也不会出现。
+- persona 行在 0.2.x 要求 `prefix` 字段（0.1.x 的 `text` 不再被接受）；`{{…}}` 模板变量必须已注册，否则该预设显示「加载失败」并在设置页给出具体行与字段。
 
 ## 调用时序
 
@@ -96,3 +112,4 @@ console.log(info.serverVersionNum)
 - Preset 与技能随目录复制，不修改 dsh 自带的 preset。
 - `kb_search` 依赖 `dist/bkagent-knowledge.mjs` 与 `var/knowledge.sqlite`；`install-dsh.sh` 在索引缺失时会自动运行 `pnpm --filter @backup-agent/knowledge index`，也可手动重建。
 - 插件只依赖 `@deepseek-ai/dsh-tools`；dsh 运行时提供 `ctx.tools` 与 `ctx.approval`。
+- 该依赖目前固定在 `dependencies` 的 `0.1.2-rc.1`，因此插件目录内会存在一份 `dsh-tools` 副本。`defineTool` 与 `ctx.tools.register` 在 0.2.2 未变（仅新增 `deferLoading`、`projectContent`），插件可正常加载；dsh 官方推荐把需要共享实例的 dsh 包写成 `peerDependencies` + `devDependencies`，这一调整尚未进行。

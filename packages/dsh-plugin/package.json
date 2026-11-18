@@ -5,7 +5,8 @@
   "type": "module",
   "main": "./index.js",
   "exports": {
-    ".": "./index.js"
+    ".": "./index.js",
+    "./package.json": "./package.json"
   },
   "bin": {
     "bkagent-mcp": "./mcp.js"
@@ -13,8 +14,14 @@
   "files": [
     "index.js",
     "mcp.js",
-    "tools.js"
+    "tools.js",
+    "cordis.patch.yml"
   ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "dependencies": {
     "@deepseek-ai/dsh-tools": "0.1.2-rc.1"
   },

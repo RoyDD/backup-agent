@@ -1,18 +1,15 @@
 #!/usr/bin/env bash
-# Install the pg-dba preset and link the dsh tool plugin into a profile.
+# Install the dsh tool plugin (and the pg-dba preset it carries) into a profile.
 #
 # Usage:
 #   scripts/install-dsh.sh [profile]
 #
 # Environment:
-#   DSH_HOME     defaults to ~/.dsh
 #   DSH_PROFILE  defaults to web
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE="${1:-${DSH_PROFILE:-web}}"
-DSH_HOME_DIR="${DSH_HOME:-$HOME/.dsh}"
-PRESET_DIR="$DSH_HOME_DIR/.agent-presets/pg-dba"
 
 command -v dsh >/dev/null 2>&1 || {
   echo "dsh not found on PATH" >&2
@@ -28,16 +25,14 @@ if [ ! -f "$REPO/var/knowledge.sqlite" ]; then
   (cd "$REPO" && pnpm --filter @backup-agent/knowledge index)
 fi
 
-echo "Installing preset to $PRESET_DIR"
-mkdir -p "$(dirname "$PRESET_DIR")"
-rm -rf "$PRESET_DIR"
-cp -R "$REPO/presets/pg-dba" "$PRESET_DIR"
-
 echo "Linking @backup-agent/dsh-plugin into profile '$PROFILE'"
+# The plugin declares `dsh.bundle`, so `add` also appends it to the profile's
+# bundle list. Its cordis.patch.yml carries the `pg-dba` agent preset; dsh 0.2.x
+# no longer reads $DSH_HOME/.agent-presets/.
 dsh plugin --profile "$PROFILE" add "link:$REPO/packages/dsh-plugin"
 
 echo
 echo "Installed."
-echo "  preset:  $PRESET_DIR"
 echo "  plugin:  @backup-agent/dsh-plugin (profile: $PROFILE)"
+echo "  preset:  pg-dba / PostgreSQL 备份恢复 (from the plugin bundle)"
 echo "Restart dsh and pick the 'PostgreSQL 备份恢复' preset."
