@@ -311,7 +311,7 @@ figcaption .n{color:var(--accent);flex:none}
 <li><a class="lv2" href="#s10" data-t="s10"><span class="tn">10</span>进阶：三条继续往前的路</a></li>
 <li><a class="lv3" href="#s10-1" data-t="s10-1">把 bkagent 装成 dsh 插件</a></li>
 <li><a class="lv3" href="#s10-2" data-t="s10-2">智能体闭环：Goal / Step / Action / Memory</a></li>
-<li><a class="lv2" href="#s11" data-t="s11"><span class="tn">11</span>出问题时的查找顺序</a></li>
+<li><a class="lv2" href="#s11" data-t="s11"><span class="tn">11</span>故障排查顺序</a></li>
 <li><a class="lv2" href="#s12" data-t="s12"><span class="tn">12</span>附录：主线命令卡</a></li>
 <li><a class="lv2" href="#s13" data-t="s13"><span class="tn">13</span>这份教程验证到什么程度</a></li>
       </ul></nav>
@@ -342,7 +342,7 @@ figcaption .n{color:var(--accent);flex:none}
 <li><a class="lv2" href="#s10"><span class="tn">10</span>进阶：三条继续往前的路</a></li>
 <li><a class="lv3" href="#s10-1">把 bkagent 装成 dsh 插件</a></li>
 <li><a class="lv3" href="#s10-2">智能体闭环：Goal / Step / Action / Memory</a></li>
-<li><a class="lv2" href="#s11"><span class="tn">11</span>出问题时的查找顺序</a></li>
+<li><a class="lv2" href="#s11"><span class="tn">11</span>故障排查顺序</a></li>
 <li><a class="lv2" href="#s12"><span class="tn">12</span>附录：主线命令卡</a></li>
 <li><a class="lv2" href="#s13"><span class="tn">13</span>这份教程验证到什么程度</a></li>
       </ol></nav>
@@ -640,7 +640,7 @@ dsh --profile web --no-open                                # 设置 → Agent �
 <figure class="term"><a class="zoom" href="assets/tutorial/13-dsh-preset.jpg" data-alt="dsh 设置页中的自定义预设"><img src="assets/tutorial/13-dsh-preset.jpg" alt="dsh 设置页中的自定义预设" width="1440" height="900" decoding="async"></a>
 <figcaption><span class="n">13</span><span>dsh 设置页中的自定义预设</span></figcaption></figure>
 <p>设置页出现「自定义 / PostgreSQL 备份恢复」，且没有「加载失败」，说明预设内每一行（persona、<code>@backup-agent/dsh-plugin</code>、技能目录）都已激活；此后新建会话并选用该预设，即可使用 <code>pg_inspect</code>、<code>pg_backup</code>、<code>pg_restore</code>、<code>pg_pitr</code>、<code>pg_verify</code>、<code>pg_catalog</code>、<code>pg_report</code> 与 <code>kb_search</code>，以及闭环工具 <code>bk_goal</code>、<code>bk_step_run</code>、<code>bk_remediate</code>、<code>bk_recall</code>。</p>
-<p>安装过程中实际遇到的三个问题：</p>
+<p>安装过程中实际遇到的三处问题：</p>
 <div class="tw"><table>
 <thead><tr><th>现象</th><th>原因</th><th>处理</th></tr></thead>
 <tbody><tr><td>安装完成后插件页出现 <code>@backup-agent/dsh-plugin</code>，但预设列表中不存在该预设</td><td>包未声明 <code>dsh.bundle</code>，<code>add</code> 只将其作为普通依赖</td><td>在 <code>package.json</code> 增加 <code>dsh.bundle.patch</code>，先 <code>remove</code> 再 <code>add</code></td></tr>
@@ -716,7 +716,7 @@ bkagent memory search --db .bkagent/control.db --target 127.0.0.1:5432/&lt;db&gt
 <p>一次实际的 <code>replan</code>（本次执行）：第 2 步把库名写成不存在的 <code>bk_missing</code>，<code>goal run</code> 以 <code>errorClass: permanent</code>、<code>signature: schema:database-missing</code>（退出码 1）失败；诊断给出的候选为 <code>replan</code>（<code>requiresAction: true</code>）与 <code>escalate</code>。执行 <code>goal remediate --kind replan --action-json …</code> 后，该步骤回到 <code>ready</code>、目标回到 <code>planned</code>，再次 <code>goal run</code> 成功（<code>attempt: 2</code>）。这说明「自我修正」只替换动作，不改变门禁与历史；同时 <code>replan</code> 会清空该步骤已有的审批记录，替换后的破坏性动作须重新执行 <code>goal approve-step</code>。</p>
 <p>dsh 侧对应四个工具：<code>bk_goal</code>（open / plan / next / status / diagnose）、<code>bk_step_run</code>、<code>bk_remediate</code>、<code>bk_recall</code>。<strong>审批刻意不做成工具</strong>：MCP 与模型都无法自行放行破坏性步骤，只能在 CLI 执行 <code>bkagent goal approve-step</code>。</p>
 <p>未做且不应描述为已实现：多智能体协作、记忆的向量检索、自由 DAG 重写、目标级并发；真实模型驱动这条闭环的端到端验收（E-09）仍未纳入发布准入检查。</p>
-<h2 id="s11"><span class="hnum">11</span><span class="htxt">出问题时的查找顺序</span></h2>
+<h2 id="s11"><span class="hnum">11</span><span class="htxt">故障排查顺序</span></h2>
 <figure class="dg-fig"><svg class="dg" viewBox="0 0 960 404" role="img" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
 <defs><marker id="ar10" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0.5 1 L9 5 L0.5 9" fill="none" stroke="currentColor" stroke-width="1.3"/></marker></defs>
 <g class="dg-g"><rect class="dg-node" x="24" y="40" width="130" height="50" rx="9"/><text class="dg-t" x="89" y="69" text-anchor="middle">命令失败</text></g><g class="dg-g"><polygon class="dg-node accent" points="480,24 580,65 480,106 380,65"/><text class="dg-t" x="480" y="69" text-anchor="middle">退出码</text></g><line class="dg-line" x1="154" y1="65" x2="378" y2="65" marker-end="url(#ar10)"/><line class="dg-line" x1="480" y1="106" x2="480" y2="150"/><line class="dg-line" x1="125" y1="150" x2="815" y2="150"/><g class="dg-g"><rect class="dg-node" x="20" y="180" width="210" height="74" rx="9"/><text class="dg-t" x="125" y="211" text-anchor="middle">读取拒绝信息首行</text><text class="dg-sub" x="125" y="231" text-anchor="middle">通常缺少 --yes 或参数错误</text></g><line class="dg-line" x1="125" y1="150" x2="125" y2="178" marker-end="url(#ar10)"/><text class="dg-lbl mono" x="125" y="141" text-anchor="middle">2 用法</text><g class="dg-g"><rect class="dg-node" x="250" y="180" width="210" height="74" rx="9"/><text class="dg-t" x="355" y="211" text-anchor="middle">psql 手动连接一次</text><text class="dg-sub" x="355" y="231" text-anchor="middle">host / port / 认证方式</text></g><line class="dg-line" x1="355" y1="150" x2="355" y2="178" marker-end="url(#ar10)"/><text class="dg-lbl mono" x="355" y="141" text-anchor="middle">3 连接</text><g class="dg-g"><rect class="dg-node" x="480" y="180" width="210" height="74" rx="9"/><text class="dg-t" x="585" y="211" text-anchor="middle">inspect 是否通过</text><text class="dg-sub" x="585" y="231" text-anchor="middle">providers 是否 READY</text></g><line class="dg-line" x1="585" y1="150" x2="585" y2="178" marker-end="url(#ar10)"/><text class="dg-lbl mono" x="585" y="141" text-anchor="middle">4 plan/probe</text><g class="dg-g"><rect class="dg-node" x="710" y="180" width="210" height="74" rx="9"/><text class="dg-t" x="815" y="211" text-anchor="middle">trace --plan 查看失败的步骤</text><text class="dg-sub" x="815" y="231" text-anchor="middle">catalog 查看是否入册</text></g><line class="dg-line" x1="815" y1="150" x2="815" y2="178" marker-end="url(#ar10)"/><text class="dg-lbl mono" x="815" y="141" text-anchor="middle">1 执行</text><g class="dg-g"><rect class="dg-node" x="360" y="330" width="240" height="52" rx="9"/><text class="dg-t" x="480" y="360" text-anchor="middle">按打印的下一步命令重试</text></g><line class="dg-line" x1="125" y1="300" x2="815" y2="300"/><line class="dg-line" x1="125" y1="254" x2="125" y2="300"/><line class="dg-line" x1="355" y1="254" x2="355" y2="300"/><line class="dg-line" x1="585" y1="254" x2="585" y2="300"/><line class="dg-line" x1="815" y1="254" x2="815" y2="300"/><line class="dg-line" x1="480" y1="300" x2="480" y2="328" marker-end="url(#ar10)"/></svg><button class="dg-zoom" type="button" aria-label="放大查看结构图"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.4 10.4 L14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button></figure>
@@ -725,7 +725,7 @@ bkagent memory search --db .bkagent/control.db --target 127.0.0.1:5432/&lt;db&gt
 <tbody><tr><td><code>no such table: …</code> 启动即报</td><td>控制库已存在，但迁移目录缺失（单文件安装常见）</td><td>设 <code>BKAGENT_MIGRATIONS</code> 指向包内 <code>dist/migrations</code>，或在旧控制库上重新执行迁移</td></tr>
 <tr><td><code>no asset registered for target …</code></td><td>目标未登记，或 <code>host</code> / <code>port</code> / 库名与 <code>targetId</code> 不一致</td><td>按拒绝信息中的 <code>asset-set</code> 执行，并统一使用 <code>127.0.0.1</code></td></tr>
 <tr><td><code>TOOL_MISSING(pgbackrest)</code></td><td>工具不在 <code>PATH</code> 上</td><td>安装或改走 <code>native-logical</code>，不要期待自动降级</td></tr>
-<tr><td><code>connection refused</code> / 退出码 <code>3</code></td><td>连接串、端口或认证失败</td><td>先用 <code>psql</code> 同参数手连一次，再回到 bkagent</td></tr>
+<tr><td><code>connection refused</code> / 退出码 <code>3</code></td><td>连接串、端口或认证失败</td><td>先用 <code>psql</code> 以相同参数手动连接一次，再回到 bkagent</td></tr>
 <tr><td><code>pg_verifybackup</code> 找不到</td><td>位于 <code>/usr/lib/postgresql/&lt;ver&gt;/bin</code>，默认不在 <code>PATH</code></td><td>加入 <code>PATH</code>，或改用 <code>--format tar</code> 并接受 V0 缺失</td></tr>
 <tr><td><code>dashboard --serve</code> 打不开</td><td>只绑定 <code>127.0.0.1</code></td><td>本机访问，或自建反向代理并加认证</td></tr></tbody>
 </table></div>

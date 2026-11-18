@@ -532,7 +532,7 @@ dsh --profile web --no-open                                # 设置 → Agent �
 
 设置页出现「自定义 / PostgreSQL 备份恢复」，且没有「加载失败」，说明预设内每一行（persona、`@backup-agent/dsh-plugin`、技能目录）都已激活；此后新建会话并选用该预设，即可使用 `pg_inspect`、`pg_backup`、`pg_restore`、`pg_pitr`、`pg_verify`、`pg_catalog`、`pg_report` 与 `kb_search`，以及闭环工具 `bk_goal`、`bk_step_run`、`bk_remediate`、`bk_recall`。
 
-安装过程中实际遇到的三个问题：
+安装过程中实际遇到的三处问题：
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
@@ -667,7 +667,7 @@ dsh 侧对应四个工具：`bk_goal`（open / plan / next / status / diagnose�
 
 未做且不应描述为已实现：多智能体协作、记忆的向量检索、自由 DAG 重写、目标级并发；真实模型驱动这条闭环的端到端验收（E-09）仍未纳入发布准入检查。
 
-## 11. 出问题时的查找顺序
+## 11. 故障排查顺序
 
 ```mermaid
 flowchart TD
@@ -687,7 +687,7 @@ flowchart TD
 | `no such table: …` 启动即报 | 控制库已存在，但迁移目录缺失（单文件安装常见） | 设 `BKAGENT_MIGRATIONS` 指向包内 `dist/migrations`，或在旧控制库上重新执行迁移 |
 | `no asset registered for target …` | 目标未登记，或 `host` / `port` / 库名与 `targetId` 不一致 | 按拒绝信息中的 `asset-set` 执行，并统一使用 `127.0.0.1` |
 | `TOOL_MISSING(pgbackrest)` | 工具不在 `PATH` 上 | 安装或改走 `native-logical`，不要期待自动降级 |
-| `connection refused` / 退出码 `3` | 连接串、端口或认证失败 | 先用 `psql` 同参数手连一次，再回到 bkagent |
+| `connection refused` / 退出码 `3` | 连接串、端口或认证失败 | 先用 `psql` 以相同参数手动连接一次，再回到 bkagent |
 | `pg_verifybackup` 找不到 | 位于 `/usr/lib/postgresql/<ver>/bin`，默认不在 `PATH` | 加入 `PATH`，或改用 `--format tar` 并接受 V0 缺失 |
 | `dashboard --serve` 打不开 | 只绑定 `127.0.0.1` | 本机访问，或自建反向代理并加认证 |
 
