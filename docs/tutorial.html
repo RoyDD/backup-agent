@@ -798,7 +798,7 @@ bkagent memory search --target 127.0.0.1:5432/&lt;db&gt;</code></pre></div>
 <tr><td><code>--transport ssh</code> / <code>--transport kubectl</code>、物理备份、PITR、<code>pgbackrest-*</code>、<code>walg-*</code>、<code>retain</code>、MCP 入口</td><td>未执行，只给入口与前置条件</td></tr>
 <tr><td>V3 校验等级</td><td>未实现</td></tr></tbody>
 </table></div>
-<p>相关的离线验收（E-08）与真实模型端到端（E-09）尚未纳入发布准入检查，当前完成度以 <a href="status.md">status.md</a> 为准。</p>
+<p>相关的离线验收（E-08）与真实模型端到端（E-09）尚未纳入发布准入检查。E-09 的 harness 可用 <code>BK_E2E=1 node scripts/e2e-agent.mjs</code> 人工执行，断言与限制见 <a href="e2e-agent.md">e2e-agent.md</a>；当前完成度以 <a href="status.md">status.md</a> 为准。</p>
     </article>
   </main>
 </div>
