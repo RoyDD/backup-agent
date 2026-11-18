@@ -896,7 +896,7 @@ ExecStart=/usr/local/bin/bkagent backup --dsn ${BKAGENT_DSN} --database ${BKAGEN
 
 生产使用前应了解的边界，完整清单见 [status.md](status.md) 的「Design items not implemented」：
 
-- E-08 离线验收只覆盖 inspect / backup / verify / report / dashboard，且单命令无独立 `plan` 子命令（多步规划由 `goal plan` 持久化）；E-09 真实模型 E2E 只能手工跑，未接入门禁，也未覆盖闭环轨迹。
+- E-08 离线验收只覆盖 inspect / backup / verify / report / dashboard，且单命令无独立 `plan` 子命令（多步规划由 `goal plan` 持久化）；E-09 真实模型 E2E 已有覆盖闭环轨迹的 harness（`scripts/e2e-agent.mjs`，经 `dsh headless --json` 断言 `hint`），但仍需人工执行，未接入门禁。
 - PITR 只做 LSN 窗口预检；WAL 缺口枚举、跨时间线 `.history` 校验、与 retention 求交集均未实现，也没有真实集群的 PITR 集成用例。
 - 校验分级：V3 业务冒烟用例集缺失；物理备份没有事后 `pg_verifybackup`；没有字节完整性复检命令，`artifact-add` 的等级是自证。
 - 目录形态产物（`pg_dump -Fd`、`pg_basebackup -Fp`）不能上传 Storage；远端产物字节不回传控制面。

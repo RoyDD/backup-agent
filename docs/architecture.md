@@ -235,3 +235,11 @@ flowchart TD
 2. 破坏性动作的 `--yes` 只在该 step 有人工审批时由核心追加，模型无法设置；`approval:required` 的诊断候选集只有 `escalate`。
 3. 动作只能由 `ACTION_FLAGS` 声明的 flag 组合而成，`--yes` / `--db` / `--principal` / `--transport` / `--state-dir` 一律保留给核心。
 
+
+### 4.1 下一步提示与工具面
+
+调度器的 `next` 只回答「当前是否可派发步骤」，无法表达「失败步骤等待修复」与「破坏性步骤等待审批」。因此 `goal run` 与 `goal remediate` 的载荷另带 `hint`，取值封闭为 `run_step` / `remediate` / `await_approval` / `done`，由目标与步骤状态现算、不入库，模型只能在该集合内行动。
+
+工具面只有一份实现：`packages/dsh-plugin/tools.js` 持有定义与 `buildArgv`，`packages/dsh-plugin/runner.js` 负责 spawn、解析与定义到 handler 的投影，`index.js`（dsh 插件）、`mcp.js`（MCP stdio）与决策层回放用例（`packages/dsh-plugin/test/goal-replay.test.js`）共用它。`bk_step_run` 与 `bk_remediate` 标记 `tolerateFailure`：这两个动词在失败与被拒时仍把决定写入 stdout 并以非零码退出，解析器保留载荷并附加 `exitCode`，否则模型只拿到一个退出码而看不到候选集。
+
+等级判定、四条判据的证据与准入检查的边界见 [agent-loop.md](agent-loop.md) §9。

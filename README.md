@@ -217,9 +217,9 @@ calls `dist/bkagent.mjs` by default, override with `BKAGENT_CLI`).
 ## Status
 
 P0–P6 are implemented and locally verified. E-01–E-07 and E-10 have both
-implementation and test evidence; E-08 is partially met, and E-09 (real-model
-E2E) is manual only and not wired into any gate, so it does not satisfy
-"green before release".
+implementation and test evidence; E-08 is partially met. E-09 (real-model E2E)
+runs manually through `scripts/e2e-agent.mjs` and covers the goal loop, but it
+is not wired into any gate, so it does not satisfy "green before release".
 
 Milestone details, acceptance evidence, the asset-inspection coverage matrix and
 the list of design items not yet implemented are in
