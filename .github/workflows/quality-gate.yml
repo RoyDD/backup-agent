@@ -1,0 +1,137 @@
+name: quality-gate
+
+# 两段式准入检查：
+#
+#   gate         —— push / PR 上的必需检查，由 scripts/gate.sh 定义（与本地同一份脚本）；
+#   release-gate —— 发版前追加真实模型 E2E（E-09），由 tag 或手工触发。
+#
+# 规范见 docs/quality/quality-gate.md（workspace 根），说明见 docs/ci.md。
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: quality-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    name: gate (typecheck / test / skills)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        # 与本地集成实例同版本；端口映射保持 55416，仓库内默认 DSN 直接可用。
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: verify_pw
+          POSTGRES_DB: postgres
+        ports:
+          - 55416:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        # 版本由 package.json 的 packageManager 决定，不在两处各写一遍。
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install PostgreSQL client and server binaries
+        # pg_dump / psql / pg_verifybackup / pg_basebackup 不在 ubuntu 镜像的默认
+        # PATH 上，且版本必须 ≥ 服务端 16。
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+            https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Gate
+        env:
+          BK_TEST_DSN: postgres://postgres:verify_pw@127.0.0.1:55416/postgres
+        run: bash scripts/gate.sh
+
+  release-gate:
+    name: release-gate (adds real-model E-09)
+    # 只在 tag 或手工触发时运行：这条流水线花钱、依赖外部模型，且它的含义是
+    # 「发版前必须绿」，不是「每次提交都要绿」。
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: verify_pw
+          POSTGRES_DB: postgres
+        ports:
+          - 55416:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install PostgreSQL client and server binaries
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+            https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] \
+            https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install dsh
+        # 版本与本地通过验证的一致（0.2.2-rc.4，dist-tag `next`）。
+        run: npm install -g @deepseek-ai/dsh@0.2.2-rc.4
+
+      - name: Release gate
+        env:
+          BK_TEST_DSN: postgres://postgres:verify_pw@127.0.0.1:55416/postgres
+          GATE_E2E: '1'
+          # 缺失时 gate.sh 把 E-09 记为 BLOCKED 并以退出码 3 结束：发版前不允许
+          # 用「未执行」冒充「通过」。
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: bash scripts/gate.sh
