@@ -1,11 +1,16 @@
 {
   "version": 1,
-  "generatedAt": "2026-11-12T13:31:16.562Z",
+  "generatedAt": "2026-11-18T11:34:03.324Z",
   "entries": [
     {
       "name": "engine-extend",
       "path": "engine-extend/SKILL.md",
       "sha256": "c853d56e8579c258c7e81b67696a5782450f0bb8dd250feb610405fe5ccc2710"
+    },
+    {
+      "name": "goal-loop",
+      "path": "goal-loop/SKILL.md",
+      "sha256": "254a513e966389be58cc36300aff843fb6bb9041e283a12358bfe100c33df213"
     },
     {
       "name": "pg-backup",

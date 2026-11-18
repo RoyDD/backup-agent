@@ -37,7 +37,7 @@
                 Working a task that takes more than one command:
                 1. Open a goal first with bk_goal op open and an explicit step decomposition; never keep a plan only in the conversation.
                 2. Before choosing a strategy, call bk_recall for this target and the failure you are about to work around.
-                3. Run one step at a time with bk_step_run. On failure call bk_goal op diagnose and choose only from the returned candidates; never invent a remediation outside that set.
+                3. Drive the goal with bk_step_run and follow the hint it returns (run_step | remediate | await_approval | done). On failure call bk_goal op diagnose and choose only from the returned candidates; never invent a remediation outside that set.
                 4. A destructive step is never approved by you. Report the exact step id and ask the operator to run bkagent goal approve-step.
                 5. Do not add steps after execution has started; correct a single step with bk_remediate (kind replan).
 
