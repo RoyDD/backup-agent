@@ -118,6 +118,7 @@ import {
   provenIdentity,
 } from './destructive-gate'
 import { createOutboxHandlers } from './outbox'
+import { runGoalCommand } from './goal'
 
 const USAGE = `bkagent — PostgreSQL backup and restore agent
 
@@ -183,6 +184,21 @@ Usage:
   bkagent cost report --db <path> [--since <iso|Nd>]
   bkagent approve --db <path> --target <id> --digest <digest> --approver <id> [--reject] [--reason <text>]
   bkagent approvals --db <path> --target <id> --digest <digest> [--ttl-minutes N]
+  bkagent goal add --db <path> --target <id> --intent <text>
+                  [--steps-json <json> | --steps-file <path>]
+                  [--constraints-json <json> | --constraints-file <path>]
+                  [--principal <id>] [--format json|text]
+  bkagent goal plan --db <path> --goal <id> [--steps-json <json> | --steps-file <path>] [--format json|text]
+  bkagent goal next --db <path> --goal <id> [--format json|text]
+  bkagent goal run --db <path> --goal <id> [--format json|text]
+  bkagent goal show --db <path> --goal <id> [--format json|text]
+  bkagent goal list --db <path> [--state <s>] [--target <id>] [--limit N] [--format json|text]
+  bkagent goal approve-step --db <path> --step <id> --approver <id> [--reason <text>] [--format json|text]
+  bkagent goal diagnose --db <path> --step <id> [--format json|text]
+  bkagent goal remediate --db <path> --step <id> --kind retry|replan|escalate|abandon
+                       [--action-json <json> | --action-file <path>] [--reason <text>] [--format json|text]
+  bkagent memory search --db <path> [--target <id>] [--signature <s>] [--query <text>] [--limit N]
+                      [--format json|text]
 
 Environment:
   BKAGENT_DSN    Default DSN when --dsn is omitted
@@ -3382,6 +3398,22 @@ export async function runCli(argv: readonly string[], deps: CliDeps = {}): Promi
           `${JSON.stringify({ targetId: values.target, digest: values.digest, status, approvals }, null, 2)}\n`,
         )
         return 0
+      }
+
+      case 'goal':
+      case 'memory': {
+        return await runGoalCommand(command, rest, {
+          write,
+          writeError,
+          env,
+          dispatch: (argv, stdout, stderr) =>
+            runCli(argv, {
+              stdout,
+              stderr,
+              env,
+              ...(deps.executor === undefined ? {} : { executor: deps.executor }),
+            }),
+        })
       }
 
       default:
