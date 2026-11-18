@@ -152,6 +152,44 @@ describe('dsh plugin handlers', () => {
   })
 })
 
+describe('tool result parsing', () => {
+  it('keeps the diagnosis of a failed step run and attaches the exit code', async () => {
+    const { run } = fakeRun({
+      code: 1,
+      stdout: '{"goalId":"g1","state":"running","executed":[],"hint":"remediate","diagnosis":{"signature":"schema:database-missing"}}',
+      stderr: 'bkagent: goal run stopped',
+    })
+    const result = await createHandlers(run).stepRun({ goal: 'g1' })
+    // The diagnosis is the only actionable part; an exception would hide it.
+    expect(result.hint).toBe('remediate')
+    expect(result.diagnosis.signature).toBe('schema:database-missing')
+    expect(result.exitCode).toBe(1)
+  })
+
+  it('keeps a refusal payload from remediate', async () => {
+    const { run } = fakeRun({
+      code: 4,
+      stdout: '{"refused":"replan is not an available remediation (available: escalate)"}',
+      stderr: '',
+    })
+    const result = await createHandlers(run).remediate({ step: 's1', kind: 'replan', action: {} })
+    expect(result.refused).toContain('escalate')
+    expect(result.exitCode).toBe(4)
+  })
+
+  it('stays strict for tools that do not opt into tolerating failure', async () => {
+    const { run } = fakeRun({ code: 3, stdout: '', stderr: 'connect:connection-refused' })
+    await expect(createHandlers(run).inspect({ dsn: 'postgres://u@h/db' })).rejects.toThrow(
+      'connect:connection-refused',
+    )
+  })
+
+  it('throws for a tolerated tool when the payload is not JSON', async () => {
+    const { run } = fakeRun({ code: 1, stdout: 'not json', stderr: 'kaboom' })
+    await expect(createHandlers(run).stepRun({ goal: 'g1' })).rejects.toThrow('kaboom')
+  })
+})
+
 describe('pg_pitr argv', () => {
   const base = {
     dsn: 'postgres://u@h/db',

@@ -435,7 +435,7 @@ export const TOOL_DEFINITIONS = [
     name: 'bk_step_run',
     method: 'stepRun',
     description:
-      '按目标顺序执行下一个可运行步骤：拼接 argv、调用同一条 CLI 入口、记录尝试与诊断。破坏性步骤只有已获人工审批时才可执行。',
+      '按目标顺序执行下一个可运行步骤：拼接 argv、调用同一条 CLI 入口、记录尝试与诊断。破坏性步骤只有已获人工审批时才可执行。返回值中的 hint 是下一步该做什么：run_step 继续执行、remediate 从候选集修复失败步骤、await_approval 等待人工审批、done 目标已到终态。步骤失败时仍返回诊断载荷，并附带 exitCode。',
     inputSchema: objectSchema(
       {
         goal: { type: 'string', description: '目标 id' },
@@ -444,6 +444,11 @@ export const TOOL_DEFINITIONS = [
       ['goal'],
     ),
     requiresApproval: false,
+    /**
+     * `goal run` writes the diagnosis to stdout and exits non-zero. The
+     * diagnosis is the only actionable result, so it must survive the exit code.
+     */
+    tolerateFailure: true,
     buildArgv(args) {
       return ['goal', 'run', '--goal', args.goal, '--db', args.db ?? defaultDb()]
     },
@@ -453,7 +458,7 @@ export const TOOL_DEFINITIONS = [
     name: 'bk_remediate',
     method: 'remediate',
     description:
-      '按诊断给出的候选集修订单个失败步骤：retry 重试、replan 替换该步动作、escalate 转人工、abandon 放弃。候选集之外的选择会被控制面拒绝。',
+      '按诊断给出的候选集修订单个失败步骤：retry 重试、replan 替换该步动作、escalate 转人工、abandon 放弃。候选集之外的选择会被控制面拒绝。返回值含 hint（run_step|remediate|await_approval|done），被拒绝时返回 refused 原因并附带 exitCode。',
     inputSchema: objectSchema(
       {
         step: { type: 'string', description: '步骤 id' },
@@ -473,6 +478,8 @@ export const TOOL_DEFINITIONS = [
       ['step', 'kind'],
     ),
     requiresApproval: false,
+    /** A refusal is a decision with a reason, not a crash: keep the payload. */
+    tolerateFailure: true,
     buildArgv(args) {
       const argv = ['goal', 'remediate', '--step', args.step, '--kind', args.kind]
       // `replan` is an in-place action swap; without a new action it would be a

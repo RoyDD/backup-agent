@@ -2,7 +2,7 @@
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
-import { createHandlers, createKnowledgeRunner, createRunner } from './index.js'
+import { createHandlers, createKnowledgeRunner, createRunner } from './runner.js'
 import { TOOL_DEFINITIONS } from './tools.js'
 
 /**
