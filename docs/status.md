@@ -23,9 +23,9 @@ P0–P6 里程碑均已完成：
 
 - **E-01 至 E-07、E-10**：有实现与测试证据。E-01 的可追溯性落在数据面（`AssetDescriptor` + Plan/Attempt/Artifact + `trace` 血缘），模型自然语言结论本身不做机器校验。E-03 的越权处置是「拒绝并写 `authorization.denied` 审计事件」，权限本身由 principal 的数据库凭据与操作系统身份承担。E-05 见 [`trace-drill.md`](trace-drill.md)，E-04 见 [`injection-drill.md`](injection-drill.md) 与 `packages/engine-postgres/test/injection.integration.test.ts`，E-07 由 `pnpm verify:skills` 的 MANIFEST 哈希守护。E-10 的审批按操作系统身份去重，同一 OS 用户无法用两个标签满足双人复核。
 - **E-08**：`scripts/offline-drill.sh` 覆盖 inspect / backup / verify / report / dashboard，**部分达成**——单命令没有独立 `plan` 子命令（规划内嵌于各命令；多步规划由 `goal plan` 持久化，见 [`agent-loop.md`](agent-loop.md)），演练也未覆盖受控恢复与目标闭环（[`offline-acceptance.md`](offline-acceptance.md) §Not covered）。
-- **E-09**：真实模型 E2E 有 2026-11-12 的成功记录（[`e2e-agent.md`](e2e-agent.md)），但只能手工执行 `scripts/e2e-agent.mjs`，**未满足发布准入**。计划中的形态是两层：`pnpm test` 内的决策层回放已就位（见下一条），发版前再执行一次真实模型运行并阻断发版；第二层尚未接入。
+- **E-09**：真实模型 E2E 已有可复现的 harness：`scripts/e2e-agent.mjs` 经 `dsh headless --json` 驱动闭环，断言 `hint` 与产物，2026-11-18 一次成功记录见 [`e2e-agent.md`](e2e-agent.md)。但本仓库没有 CI，脚本仍需人工执行，**未满足发布准入**；接入准入需要一条能运行 dsh 与 PostgreSQL 的流水线。
 - **智能体等级：L1 受监督**（判定尺子与证据链见 [`agent-loop.md`](agent-loop.md) §9）。四条判据均有实现与测试证据；模型侧行为由决策层回放守住工具面契约，证据用例为 `packages/dsh-plugin/test/goal-replay.test.js`（要求先 `pnpm build:cli`，需要本地 PostgreSQL，前置缺失时 SKIP 不计 PASS）。据此可以称「受监督智能体」，「自主智能体」「无人值守」不适用。
-- **闭环（Goal/Step/Action/Memory）**：有单测与针对真实 PostgreSQL 的集成用例（`packages/cli/test/goal.integration.test.ts` 覆盖成功路径、permanent 失败→`replan`→成功、未审批破坏性步骤被拒三条路径），`dist/bkagent.mjs` 与 MCP 入口也已手工验证。决策层回放（`packages/dsh-plugin/test/goal-replay.test.js`）经同一工具定义驱动真实子进程，断言 `hint` 的 `done` / `remediate` / `run_step` / `await_approval`。但**没有**由真实模型驱动这条闭环的 E2E；闭环的模型侧行为仍无回归门禁。
+- **闭环（Goal/Step/Action/Memory）**：有单测与针对真实 PostgreSQL 的集成用例（`packages/cli/test/goal.integration.test.ts` 覆盖成功路径、permanent 失败→`replan`→成功、未审批破坏性步骤被拒三条路径），`dist/bkagent.mjs` 与 MCP 入口也已手工验证。决策层回放（`packages/dsh-plugin/test/goal-replay.test.js`）经同一工具定义驱动真实子进程，断言 `hint` 的 `done` / `remediate` / `run_step` / `await_approval`。真实模型侧有一条 2026-11-18 的成功轨迹：模型开启两步目标、`bk_step_run` 推进到 `hint: done`、产物落盘。模型在失败时是否只在候选集内选择，仍无真实模型证据。
 
 ## 巡检既有资产（含非 agent 产物）
 

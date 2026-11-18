@@ -135,7 +135,7 @@ bkagent memory search --db <path> [--target <id>] [--signature <s>] [--query <te
 | 失败诊断与修复选择 | `diagnose` 生成封闭候选集，`decideRemediation` 拒绝集合外的选择，`autoRemediation` 只放行 `retry` | — |
 | 结果回流记忆 | 每个终态步骤写 `memory_entries`，`recall()` 确定性检索，`goal plan` 返回 `prior` | 无向量检索与语义聚类 |
 
-模型侧行为的证据：`packages/dsh-plugin/test/goal-replay.test.js` 以固定决策序列经工具面驱动真实子进程、真实控制库与真实 PostgreSQL，覆盖成功、`permanent` 失败后 `replan`、未审批破坏性步骤三类路径并断言 `hint`。该用例验证的是闭环契约与工具面，**不验证模型是否会做出这些决策**；后者仍只有 `E-09` 的手工记录。
+模型侧行为的证据：`packages/dsh-plugin/test/goal-replay.test.js` 以固定决策序列经工具面驱动真实子进程、真实控制库与真实 PostgreSQL，覆盖成功、`permanent` 失败后 `replan`、未审批破坏性步骤三类路径并断言 `hint`。该用例验证的是闭环契约与工具面，**不验证模型是否会做出这些决策**；后者由 `scripts/e2e-agent.mjs` 的真实模型运行补充，2026-11-18 一次记录证明模型会开启目标并推进到 `hint: done`，失败与审批路径仍无模型证据。
 
 ### 9.3 next 与 hint
 
@@ -157,7 +157,7 @@ bkagent memory search --db <path> [--target <id>] [--signature <s>] [--query <te
 ### 9.5 证据与指标
 
 - 准入检查：`pnpm test` 内的决策层回放，要求先执行 `pnpm build:cli`，并需要本地 PostgreSQL。前置条件缺失时用例以 SKIP 报告，不计为 PASS。
-- 发版前：真实模型经 `dsh headless --json` 运行，断言 `tool_call` 序列；使用独立 `DSH_HOME`，不改动 `~/.dsh`。
+- 发版前：真实模型经 `dsh headless --json` 运行，断言 `tool_call` 序列与 `hint`；使用独立 `DSH_HOME`，不改动 `~/.dsh`。harness 与一次成功记录见 [`e2e-agent.md`](e2e-agent.md)；本仓库没有 CI，该步仍需人工执行。
 - 自主完成率：分母为进入 `planned` 的目标，分子为未经人工 `remediate` / `escalate` 即到达 `succeeded` 的目标。样本少于 30 条时只报绝对条数与失败归因，不报百分比。
 
 ## 10. v1 边界
