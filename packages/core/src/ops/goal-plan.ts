@@ -19,7 +19,9 @@ import {
 } from '../domain/action'
 import {
   isTerminalStepState,
+  stepNeedsApproval,
   type GoalConstraints,
+  type GoalState,
   type GoalStep,
 } from '../domain/goal'
 import type { GoalStepId } from '../domain/ids'
@@ -285,4 +287,44 @@ export function blockedStepIds(steps: readonly GoalStep[]): readonly GoalStepId[
   }
 
   return blocked
+}
+
+/**
+ * The agent's next decision, as the loop's contract states it.
+ *
+ * `next` (a `SchedulerOutcome`) answers one question: may the core dispatch a
+ * step now. It says nothing about whether the agent should keep going, ask a
+ * human, or choose a remediation. `hint` is that second answer. It is derived
+ * from persisted state alone, so two identical control databases always
+ * produce the same value and a replay can assert it.
+ *
+ * Precedence, highest first:
+ *
+ * 1. `done` - the goal is terminal. `failed` and `abandoned` count as terminal:
+ *    an escalated failure is a human's decision, and re-diagnosing it would
+ *    turn `escalate` into a suggestion.
+ * 2. `remediate` - a step is `failed` and its candidate set is still open. This
+ *    outranks `run_step`: an unrelated runnable step does not answer that
+ *    decision, and dependents of the failed step cannot run until it is
+ *    settled.
+ * 3. `await_approval` - the next runnable step is destructive and unapproved.
+ *    Only a human can unlock it.
+ * 4. `run_step` - the scheduler may dispatch.
+ * 5. `done` - nothing runnable and nothing failed: blocked or empty only.
+ */
+export const AGENT_HINTS = ['run_step', 'remediate', 'await_approval', 'done'] as const
+export type AgentHint = (typeof AGENT_HINTS)[number]
+
+export function agentHint(goalState: GoalState, steps: readonly GoalStep[]): AgentHint {
+  if (goalState === 'succeeded' || goalState === 'failed' || goalState === 'abandoned') {
+    return 'done'
+  }
+  if (steps.some((step) => step.state === 'failed')) return 'remediate'
+  const outcome = nextRunnable(steps)
+  if (outcome.kind === 'run') {
+    return stepNeedsApproval(outcome.step.action, outcome.step.approvedBy)
+      ? 'await_approval'
+      : 'run_step'
+  }
+  return 'done'
 }

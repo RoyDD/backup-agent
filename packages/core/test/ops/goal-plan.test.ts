@@ -4,6 +4,8 @@ import type { StepAction } from '../../src/domain/action'
 import type { GoalConstraints, GoalStep, StepState } from '../../src/domain/goal'
 import { asGoalId, asGoalStepId, type GoalStepId } from '../../src/domain/ids'
 import {
+  AGENT_HINTS,
+  agentHint,
   blockedStepIds,
   goalProgress,
   nextRunnable,
@@ -264,6 +266,57 @@ describe('blockedStepIds', () => {
       makeStep({ ordinal: 10, state: 'pending', dependsOn: [stepId(9)] }),
     ]
     expect(blockedStepIds(steps)).toEqual([stepId(3), stepId(4), stepId(5), stepId(10)])
+  })
+})
+
+describe('agentHint', () => {
+  const restore: StepAction = { command: 'restore', args: ['--input', '/tmp/a.dump'] }
+  const inspect: StepAction = { command: 'inspect', args: [] }
+
+  it('reports done for every terminal goal state', () => {
+    const steps = [makeStep({ ordinal: 1, state: 'succeeded' })]
+    expect(agentHint('succeeded', steps)).toBe('done')
+    // `failed` is terminal on purpose: an escalated failure is a human decision,
+    // and a hint that kept asking for remediation would revive it.
+    expect(agentHint('failed', [makeStep({ ordinal: 1, state: 'failed' })])).toBe('done')
+    expect(agentHint('abandoned', [makeStep({ ordinal: 1, state: 'abandoned' })])).toBe('done')
+  })
+
+  it('asks for remediation before anything else while a step is failed', () => {
+    const steps = [
+      makeStep({ ordinal: 1, state: 'failed' }),
+      makeStep({ ordinal: 2, state: 'ready' }),
+    ]
+    // Step 2 is runnable, but the failed step's candidate set is the open decision.
+    expect(agentHint('running', steps)).toBe('remediate')
+  })
+
+  it('reports await_approval for an unapproved destructive step', () => {
+    const steps = [makeStep({ ordinal: 1, state: 'ready', action: restore })]
+    expect(agentHint('running', steps)).toBe('await_approval')
+  })
+
+  it('reports run_step once a human approved the destructive step', () => {
+    const steps = [{ ...makeStep({ ordinal: 1, state: 'ready', action: restore }), approvedBy: 'dba' }]
+    expect(agentHint('running', steps)).toBe('run_step')
+  })
+
+  it('reports run_step for a pending step whose dependencies succeeded', () => {
+    const steps = [
+      makeStep({ ordinal: 1, state: 'succeeded' }),
+      makeStep({ ordinal: 2, state: 'pending', dependsOn: [stepId(1)], action: inspect }),
+    ]
+    expect(agentHint('planned', steps)).toBe('run_step')
+  })
+
+  it('reports done when nothing is runnable and nothing failed', () => {
+    const steps = [makeStep({ ordinal: 1, state: 'blocked' })]
+    expect(agentHint('planned', steps)).toBe('done')
+    expect(agentHint('planned', [])).toBe('done')
+  })
+
+  it('publishes a closed set of hints', () => {
+    expect([...AGENT_HINTS]).toEqual(['run_step', 'remediate', 'await_approval', 'done'])
   })
 })
 
