@@ -293,11 +293,11 @@ figcaption .n{color:var(--accent);flex:none}
       <nav><ul class="toc">
 <li><a class="lv2" href="#s1" data-t="s1"><span class="tn">01</span>准备环境</a></li>
 <li><a class="lv3" href="#s1-1" data-t="s1-1">安装与构建</a></li>
-<li><a class="lv3" href="#s1-2" data-t="s1-2">准备一个可以备份的库</a></li>
+<li><a class="lv3" href="#s1-2" data-t="s1-2">准备一个可备份的数据库</a></li>
 <li><a class="lv3" href="#s1-3" data-t="s1-3">三个入口参数</a></li>
 <li><a class="lv3" href="#s1-4" data-t="s1-4">一次操作在控制库里留下什么</a></li>
 <li><a class="lv2" href="#s2" data-t="s2"><span class="tn">02</span>第 1 步：inspect —— 先确认在对谁操作</a></li>
-<li><a class="lv2" href="#s3" data-t="s3"><span class="tn">03</span>第 2 步：asset-set —— 给目标建档</a></li>
+<li><a class="lv2" href="#s3" data-t="s3"><span class="tn">03</span>第 2 步：asset-set —— 登记目标资产</a></li>
 <li><a class="lv2" href="#s4" data-t="s4"><span class="tn">04</span>第 3 步：providers —— 确认可用链路</a></li>
 <li><a class="lv2" href="#s5" data-t="s5"><span class="tn">05</span>第 4 步：backup —— 产出第一个恢复点</a></li>
 <li><a class="lv2" href="#s6" data-t="s6"><span class="tn">06</span>第 5 步：verify —— 把 V1 升级为 V2</a></li>
@@ -310,6 +310,7 @@ figcaption .n{color:var(--accent);flex:none}
 <li><a class="lv2" href="#s9" data-t="s9"><span class="tn">09</span>观测：dashboard 与 watchdog</a></li>
 <li><a class="lv2" href="#s10" data-t="s10"><span class="tn">10</span>进阶：三条继续往前的路</a></li>
 <li><a class="lv3" href="#s10-1" data-t="s10-1">把 bkagent 装成 dsh 插件</a></li>
+<li><a class="lv3" href="#s10-2" data-t="s10-2">智能体闭环：Goal / Step / Action / Memory</a></li>
 <li><a class="lv2" href="#s11" data-t="s11"><span class="tn">11</span>出问题时的查找顺序</a></li>
 <li><a class="lv2" href="#s12" data-t="s12"><span class="tn">12</span>附录：主线命令卡</a></li>
 <li><a class="lv2" href="#s13" data-t="s13"><span class="tn">13</span>这份教程验证到什么程度</a></li>
@@ -323,11 +324,11 @@ figcaption .n{color:var(--accent);flex:none}
       <nav><ol>
 <li><a class="lv2" href="#s1"><span class="tn">01</span>准备环境</a></li>
 <li><a class="lv3" href="#s1-1">安装与构建</a></li>
-<li><a class="lv3" href="#s1-2">准备一个可以备份的库</a></li>
+<li><a class="lv3" href="#s1-2">准备一个可备份的数据库</a></li>
 <li><a class="lv3" href="#s1-3">三个入口参数</a></li>
 <li><a class="lv3" href="#s1-4">一次操作在控制库里留下什么</a></li>
 <li><a class="lv2" href="#s2"><span class="tn">02</span>第 1 步：inspect —— 先确认在对谁操作</a></li>
-<li><a class="lv2" href="#s3"><span class="tn">03</span>第 2 步：asset-set —— 给目标建档</a></li>
+<li><a class="lv2" href="#s3"><span class="tn">03</span>第 2 步：asset-set —— 登记目标资产</a></li>
 <li><a class="lv2" href="#s4"><span class="tn">04</span>第 3 步：providers —— 确认可用链路</a></li>
 <li><a class="lv2" href="#s5"><span class="tn">05</span>第 4 步：backup —— 产出第一个恢复点</a></li>
 <li><a class="lv2" href="#s6"><span class="tn">06</span>第 5 步：verify —— 把 V1 升级为 V2</a></li>
@@ -340,6 +341,7 @@ figcaption .n{color:var(--accent);flex:none}
 <li><a class="lv2" href="#s9"><span class="tn">09</span>观测：dashboard 与 watchdog</a></li>
 <li><a class="lv2" href="#s10"><span class="tn">10</span>进阶：三条继续往前的路</a></li>
 <li><a class="lv3" href="#s10-1">把 bkagent 装成 dsh 插件</a></li>
+<li><a class="lv3" href="#s10-2">智能体闭环：Goal / Step / Action / Memory</a></li>
 <li><a class="lv2" href="#s11"><span class="tn">11</span>出问题时的查找顺序</a></li>
 <li><a class="lv2" href="#s12"><span class="tn">12</span>附录：主线命令卡</a></li>
 <li><a class="lv2" href="#s13"><span class="tn">13</span>这份教程验证到什么程度</a></li>
@@ -350,12 +352,12 @@ figcaption .n{color:var(--accent);flex:none}
       <div class="kicker">PostgreSQL 备份与恢复 · tutorial</div>
       <h1>bkagent 使用教程</h1>
       <p class="hero-sub">从零执行「探测 → 登记 → 备份 → 校验 → 恢复 → 观测」完整闭环的实操教程</p>
-      <div class="meta"><span>2026-11-18</span><span><b>13</b> 节</span><span><b>8</b> 张结构图</span><span><b>13</b> 张截图</span><span>PostgreSQL <b>16.15</b></span></div>
+      <div class="meta"><span>2026-11-18</span><span><b>13</b> 节</span><span><b>10</b> 张结构图</span><span><b>15</b> 张截图</span><span>PostgreSQL <b>16.15</b></span></div>
     </header>
 
     <article class="prose">
 <p>本文以一个可复现的演示库为对象，按顺序执行 bkagent 的最小闭环：探测实例、登记资产、产出备份、校验恢复点、通过门禁恢复、查看台账与告警。每一步都给出实际执行的命令与真实输出，并说明这一步为什么必须存在。</p>
-<p>适合两类读者：首次接触本项目、需要在本机完成端到端验证的 DBA；以及评估该链路是否满足生产要求的评审者。命令参数、门禁细则与全部 36 条命令的参考手册见 <a href="usage.md">usage.md</a>，设计原理见 <a href="architecture.md">architecture.md</a>；本教程只覆盖主线与常见分支。</p>
+<p>适合两类读者：首次接触本项目、需要在本机完成端到端验证的 DBA；以及评估该链路是否满足生产要求的评审者。命令参数与门禁细则见 <a href="usage.md">usage.md</a>（完整命令清单以 <code>bkagent --help</code> 为准），设计原理见 <a href="architecture.md">architecture.md</a>；本教程只覆盖主线与常见分支。</p>
 <p>源码仓库：<a href="https://github.com/RoyDD/backup-agent" class="ext" target="_blank" rel="noopener noreferrer">RoyDD/backup-agent</a>。本教程的 Markdown 源文件为 <a href="https://github.com/RoyDD/backup-agent/blob/main/docs/tutorial.md" class="ext" target="_blank" rel="noopener noreferrer"><code>docs/tutorial.md</code></a>，单页版为 <a href="https://github.com/RoyDD/backup-agent/blob/main/docs/tutorial.html" class="ext" target="_blank" rel="noopener noreferrer"><code>docs/tutorial.html</code></a>；文中提到的命令、脚本与插件均可在该仓库对应路径下查阅。</p>
 <p>本教程的输出取自本地演练环境（PostgreSQL 16.15、控制库为临时目录下的 SQLite 文件），其中的 id、时间戳、大小与临时库名随环境变化，字段名与命令不变。截图里的产物路径位于演练临时目录，正文命令统一用 <code>/var/backups</code> 表示常规落地位置。</p>
 <figure class="dg-fig"><svg class="dg" viewBox="0 0 960 574" role="img" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
@@ -367,10 +369,10 @@ figcaption .n{color:var(--accent);flex:none}
 pnpm build:cli                       # 产出 dist/bkagent.mjs 与 dist/migrations</code></pre></div>
 <p>开发态可改用 <code>pnpm bkagent &lt;command&gt;</code>，由 <code>tsx</code> 直接从源码执行，参数与构建产物完全一致。后文命令统一写作 <code>bkagent</code>，指二者之一。</p>
 <p>环境要求：Node.js ≥ 22.5（依赖 <code>node:sqlite</code>，运行时的 <code>ExperimentalWarning: SQLite</code> 属预期）、pnpm 11.24、目标 PostgreSQL 14–17 且 <code>psql</code> / <code>pg_dump</code> 可用。</p>
-<h3 id="s1-2"><span class="hnum3">1.2</span>准备一个可以备份的库</h3>
+<h3 id="s1-2"><span class="hnum3">1.2</span>准备一个可备份的数据库</h3>
 <p>本文假定目标实例已有业务库；若不存在，可执行下列脚本创建 <code>bk_tut</code>（三张表、一个索引、200 条客户记录、800 条订单记录）。</p>
 <div class="code"><pre data-lang="sh"><code>createdb -h 127.0.0.1 -p 5432 -U postgres bk_tut</code></pre></div>
-<p>（下面命令按 5432 举例；本文截图取自 55416 的本地演练实例，端口按自己的实例替换。）</p>
+<p>（下列命令以 5432 为例；本文截图取自 55416 的本地演练实例，端口按实际实例替换。）</p>
 <div class="code"><pre data-lang="sql"><code>CREATE TABLE customers (
   id bigserial PRIMARY KEY, email text NOT NULL UNIQUE,
   region text NOT NULL, created_at timestamptz NOT NULL DEFAULT now()
@@ -408,7 +410,7 @@ ANALYZE;</code></pre></div>
 <figure class="dg-fig"><svg class="dg" viewBox="0 0 960 376" role="img" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
 <defs><marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0.5 1 L9 5 L0.5 9" fill="none" stroke="currentColor" stroke-width="1.3"/></marker></defs>
 <g class="dg-g"><rect class="dg-node" x="20" y="18" width="160" height="56" rx="9"/><text class="dg-t" x="100" y="50" text-anchor="middle">一条命令</text></g><g class="dg-g"><rect class="dg-node" x="200" y="18" width="160" height="56" rx="9"/><text class="dg-t" x="280" y="40" text-anchor="middle">Ticket</text><text class="dg-sub" x="280" y="60" text-anchor="middle">意图</text></g><g class="dg-g"><rect class="dg-node" x="380" y="18" width="160" height="56" rx="9"/><text class="dg-t" x="460" y="40" text-anchor="middle">Plan</text><text class="dg-sub" x="460" y="60" text-anchor="middle">Step DAG + 指纹</text></g><g class="dg-g"><rect class="dg-node" x="560" y="18" width="160" height="56" rx="9"/><text class="dg-t" x="640" y="40" text-anchor="middle">Attempt</text><text class="dg-sub" x="640" y="60" text-anchor="middle">执行结果</text></g><g class="dg-g"><rect class="dg-node" x="740" y="18" width="160" height="56" rx="9"/><text class="dg-t" x="820" y="40" text-anchor="middle">Artifact</text><text class="dg-sub" x="820" y="60" text-anchor="middle">产物 + 校验等级</text></g><g class="dg-g"><rect class="dg-node" x="380" y="150" width="160" height="56" rx="9"/><text class="dg-t" x="460" y="172" text-anchor="middle">Outbox</text><text class="dg-sub" x="460" y="192" text-anchor="middle">审计 / 通知</text></g><g class="dg-g"><rect class="dg-node" x="20" y="290" width="160" height="56" rx="9"/><text class="dg-t" x="100" y="312" text-anchor="middle">Asset</text><text class="dg-sub" x="100" y="332" text-anchor="middle">目标业务属性</text></g><g class="dg-g"><rect class="dg-node" x="340" y="290" width="160" height="56" rx="9"/><text class="dg-t" x="420" y="312" text-anchor="middle">Approval</text><text class="dg-sub" x="420" y="332" text-anchor="middle">绑定操作 digest</text></g><line class="dg-line" x1="180" y1="46" x2="198" y2="46" marker-end="url(#ar2)"/><line class="dg-line" x1="360" y1="46" x2="378" y2="46" marker-end="url(#ar2)"/><line class="dg-line" x1="540" y1="46" x2="558" y2="46" marker-end="url(#ar2)"/><line class="dg-line" x1="720" y1="46" x2="738" y2="46" marker-end="url(#ar2)"/><line class="dg-line" x1="460" y1="74" x2="460" y2="148" marker-end="url(#ar2)"/><path class="dg-line dash" d="M 100 290 L 100 232 L 820 232 L 820 76"/><line class="dg-line dash" x1="180" y1="318" x2="338" y2="318"/></svg><button class="dg-zoom" type="button" aria-label="放大查看结构图"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.4 10.4 L14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button></figure>
-<p><code>inspect</code>、<code>providers</code> 不写控制库；<code>backup</code> 写 Plan/Attempt/Artifact；<code>verify</code> 把校验等级升级到 V2；<code>restore</code> 读 Asset 与 Approval 做门禁。退出码含义：<code>0</code> 成功、<code>1</code> 执行失败、<code>2</code> 用法错误或门禁拒绝、<code>3</code> 连接失败、<code>4</code> plan/probe 失败。</p>
+<p><code>inspect</code>、<code>providers</code> 不写控制库；<code>backup</code> 写 Plan/Attempt/Artifact；<code>verify</code> 把校验等级升级到 V2；<code>restore</code> 读 Asset 与 Approval 做门禁。v1.2 另增 <code>goals</code>、<code>goal_steps</code>、<code>step_attempts</code>、<code>memory_entries</code> 四张表承载智能体闭环，见 10.2。退出码含义：<code>0</code> 成功、<code>1</code> 执行失败、<code>2</code> 用法错误或门禁拒绝、<code>3</code> 连接失败、<code>4</code> plan/probe 失败。</p>
 <h2 id="s2"><span class="hnum">02</span><span class="htxt">第 1 步：<code>inspect</code> —— 先确认在对谁操作</span></h2>
 <div class="code"><pre data-lang="sh"><code>export BKAGENT_DSN='postgres://postgres@127.0.0.1:55416/bk_tut'
 bkagent inspect --format text</code></pre></div>
@@ -422,10 +424,10 @@ bkagent inspect --format text</code></pre></div>
 <tr><td><code>in_recovery</code></td><td>备库为 <code>true</code>；在备库上做物理备份与 PITR 的前提不同</td></tr>
 <tr><td><code>wal_level</code> / <code>archive_mode</code></td><td>逻辑备份不需要；物理备份、PITR、WAL-G 链路分别要求 <code>replica</code>/<code>logical</code> 与开启归档</td></tr>
 <tr><td><code>execution_site</code></td><td><code>local</code> 表示在本机 spawn；远端执行时显示 <code>ssh:</code> / <code>kubectl:</code> 前缀</td></tr>
-<tr><td><code>databases</code></td><td>同实例上有哪些库，写 <code>--database</code> 时不要写错</td></tr></tbody>
+<tr><td><code>databases</code></td><td>同实例的数据库清单；填写 <code>--database</code> 时须与库名一致</td></tr></tbody>
 </table></div>
-<p>请全程统一写 <code>127.0.0.1</code>：接下来登记的资产 <code>targetId</code> 必须与计划算出的字符串完全一致，主机名写法不同会被当成两个目标。</p>
-<h2 id="s3"><span class="hnum">03</span><span class="htxt">第 2 步：<code>asset-set</code> —— 给目标建档</span></h2>
+<p>请全程统一写 <code>127.0.0.1</code>：接下来登记的资产 <code>targetId</code> 必须与计划算出的字符串完全一致，主机名写法不同会被识别为两个不同目标。</p>
+<h2 id="s3"><span class="hnum">03</span><span class="htxt">第 2 步：<code>asset-set</code> —— 登记目标资产</span></h2>
 <p>资产（Asset）是目标的业务属性：环境、负责人、关键级别、数据分级、RPO、RTO。它不是可选的备注，而是三件事的输入：恢复门禁判断是否属于生产、<code>watchdog</code> 判断告警等级、<code>asset-rpo</code> 判断恢复点是否过期。</p>
 <div class="code"><pre data-lang="sh"><code>bkagent asset-set --target 127.0.0.1:55416/bk_tut --engine postgres \
   --environment production --owner dba --criticality high \
@@ -438,8 +440,8 @@ bkagent inspect --format text</code></pre></div>
 <rect class="dg-node" x="20" y="12" width="330" height="62" rx="9"/>
 <text class="dg-cmd" x="36" y="38">--dsn</text>
 <text class="dg-cmd sm" x="36" y="58">postgres://postgres@127.0.0.1:55416/bk_tut</text><g class="dg-g"><rect class="dg-node" x="20" y="124" width="270" height="48" rx="9"/><text class="dg-cmd" x="155" y="152" text-anchor="middle">host = 127.0.0.1</text></g><g class="dg-g"><rect class="dg-node" x="345" y="124" width="270" height="48" rx="9"/><text class="dg-cmd" x="480" y="152" text-anchor="middle">port = 55416</text></g><g class="dg-g"><rect class="dg-node" x="670" y="124" width="270" height="48" rx="9"/><text class="dg-cmd" x="805" y="152" text-anchor="middle">database = bk_tut</text></g><line class="dg-line" x1="185" y1="74" x2="185" y2="96"/><line class="dg-line" x1="155" y1="96" x2="805" y2="96"/><path class="dg-line" d="M155 96 L155 122" marker-end="url(#ar3)"/><line class="dg-line" x1="480" y1="96" x2="480" y2="122" marker-end="url(#ar3)"/><path class="dg-line" d="M805 96 L805 122" marker-end="url(#ar3)"/><g class="dg-g"><rect class="dg-node accent" x="330" y="226" width="300" height="58" rx="9"/><text class="dg-cmd" x="480" y="249" text-anchor="middle">targetId</text><text class="dg-sub" x="480" y="269" text-anchor="middle">127.0.0.1:55416/bk_tut</text></g><path class="dg-line" d="M155 172 L155 198 L480 198 L480 224" marker-end="url(#ar3)"/><line class="dg-line" x1="480" y1="172" x2="480" y2="224" marker-end="url(#ar3)"/><path class="dg-line" d="M805 172 L805 198 L480 198"/><g class="dg-g"><polygon class="dg-node accent" points="480,306 624,346 480,386 336,346"/><text class="dg-t" x="480" y="350" text-anchor="middle">与 Asset 行匹配？</text></g><line class="dg-line" x1="480" y1="284" x2="480" y2="304" marker-end="url(#ar3)"/><g class="dg-g"><rect class="dg-node" x="60" y="440" width="280" height="58" rx="9"/><text class="dg-t" x="200" y="473" text-anchor="middle">门禁放行</text></g><g class="dg-g"><rect class="dg-node" x="620" y="440" width="280" height="58" rx="9"/><text class="dg-t" x="760" y="463" text-anchor="middle">拒绝</text><text class="dg-sub" x="760" y="483" text-anchor="middle">no asset registered</text></g><path class="dg-line" d="M336 346 L200 346 L200 438" marker-end="url(#ar3)"/><path class="dg-line" d="M624 346 L760 346 L760 438" marker-end="url(#ar3)"/><text class="dg-lbl" x="268" y="334" text-anchor="middle">是</text><text class="dg-lbl" x="692" y="334" text-anchor="middle">否</text></svg><button class="dg-zoom" type="button" aria-label="放大查看结构图"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.4 10.4 L14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button></figure>
-<p>三个容易错的地方：</p>
-<ul><li>用 <code>localhost</code> 登记、用 <code>127.0.0.1</code> 备份，会被算成两个目标。</li><li>恢复时 <code>--database</code> 是<strong>目标库名</strong>，与备份来源库名不同，<code>targetId</code> 也随之改变；换库名恢复要为新库单独登记。</li><li>已存在的资产要「变宽松」（降低关键级别、去掉 <code>--protected</code>、改环境）时，必须再加 <code>--yes --principal &lt;id&gt;</code>，否则被拒。</li></ul>
+<p>三处常见错误：</p>
+<ul><li>用 <code>localhost</code> 登记、用 <code>127.0.0.1</code> 备份，会被识别为两个不同目标。</li><li>恢复时 <code>--database</code> 是<strong>目标库名</strong>，与备份来源库名不同，<code>targetId</code> 也随之改变；换库名恢复要为新库单独登记。</li><li>已存在的资产要「变宽松」（降低关键级别、去掉 <code>--protected</code>、改环境）时，必须再加 <code>--yes --principal &lt;id&gt;</code>，否则被拒。</li></ul>
 <h2 id="s4"><span class="hnum">04</span><span class="htxt">第 3 步：<code>providers</code> —— 确认可用链路</span></h2>
 <div class="code"><pre data-lang="sh"><code>bkagent providers --format text</code></pre></div>
 <figure class="term"><a class="zoom" href="assets/tutorial/02-providers.png" data-alt="providers 的实际输出，退出码 1"><img src="assets/tutorial/02-providers.png" alt="providers 的实际输出，退出码 1" width="2400" height="486" decoding="async"></a>
@@ -449,7 +451,7 @@ native-physical: ok
 pgbackrest: NOT READY — TOOL_MISSING(pgbackrest): required tool "pgbackrest" is not available or did not report a version
 walg: NOT READY — TOOL_MISSING(wal-g): required tool "wal-g" is not available or did not report a version</code></pre></div>
 <p>这段输出需要正确解读，否则会误判为故障：</p>
-<ul><li>本机未安装 <code>pgbackrest</code> 与 <code>wal-g</code>，因此两条链路为 <code>NOT READY</code>，命令以退出码 <code>1</code> 结束。这是<strong>能力协商（capability negotiation）失败关闭</strong>：未声明的能力会明确报错，不会静默降级成 <code>pg_dump</code>。</li><li><code>native-logical</code>、<code>native-physical</code> 为 <code>ok</code>，只说明 <code>pg_dump</code> / <code>pg_basebackup</code> 可用，不代表版本匹配已通过；真正的版本与参数校验在执行时按计划逐步进行。</li><li>只关心逻辑备份时，这两行 <code>NOT READY</code> 可以忽略；但只要计划里出现 <code>pgbackrest-*</code> / <code>walg-*</code> 步骤，就必须先让对应工具出现在 <code>PATH</code> 上（或显式传 <code>--walg &lt;bin&gt;</code>）。</li></ul>
+<ul><li>本机未安装 <code>pgbackrest</code> 与 <code>wal-g</code>，因此两条链路为 <code>NOT READY</code>，命令以退出码 <code>1</code> 结束。这是<strong>能力协商（capability negotiation）失败关闭</strong>：未声明的能力会明确报错，不会静默降级成 <code>pg_dump</code>。</li><li><code>native-logical</code>、<code>native-physical</code> 为 <code>ok</code>，只说明 <code>pg_dump</code> / <code>pg_basebackup</code> 可用，不代表版本匹配已通过；真正的版本与参数校验在执行时按计划逐步进行。</li><li>只关心逻辑备份时，这两行 <code>NOT READY</code> 可忽略；但只要计划里出现 <code>pgbackrest-*</code> / <code>walg-*</code> 步骤，就必须先让对应工具出现在 <code>PATH</code> 上（或显式传 <code>--walg &lt;bin&gt;</code>）。</li></ul>
 <h2 id="s5"><span class="hnum">05</span><span class="htxt">第 4 步：<code>backup</code> —— 产出第一个恢复点</span></h2>
 <div class="code"><pre data-lang="sh"><code>bkagent backup --database bk_tut --out /var/backups/bk_tut.dump --format custom</code></pre></div>
 <figure class="term"><a class="zoom" href="assets/tutorial/04-backup.png" data-alt="backup 的实际输出（节选）"><img src="assets/tutorial/04-backup.png" alt="backup 的实际输出（节选）" width="2400" height="1846" decoding="async"></a>
@@ -520,7 +522,7 @@ bkagent asset-rpo</code></pre></div>
   }
 ]</code></pre></div>
 <p>需要重点关注三个字段：<code>verifiedLevel</code>（V2 才有恢复价值）、<code>lifecycleState</code>（<code>live</code> / <code>tombstoned</code>，保留策略只打墓碑不删文件）、<code>checksum</code>（与远端存储副本比对时使用）。</p>
-<p><code>asset-rpo</code> 换个角度回答「我现在有没有达标的恢复点」：<code>ageMinutes</code> 是最近一次 V2 的年龄，<code>withinRpo</code> 与资产登记的 <code>--rpo-minutes</code> 比较。巡检脚本通常直接读取这两个字段。</p>
+<p><code>asset-rpo</code> 从另一个角度回答「当前是否存在满足 RPO 的恢复点」：<code>ageMinutes</code> 是最近一次 V2 的年龄，<code>withinRpo</code> 与资产登记的 <code>--rpo-minutes</code> 比较。巡检脚本通常直接读取这两个字段。</p>
 <p><code>report</code> 输出面向人的汇总，<code>metrics</code> 输出 Prometheus 文本格式的时间序列：</p>
 <figure class="term"><a class="zoom" href="assets/tutorial/11-report-metrics.png" data-alt="report 与 metrics 的实际输出（metrics 为节选）"><img src="assets/tutorial/11-report-metrics.png" alt="report 与 metrics 的实际输出（metrics 为节选）" width="2400" height="1978" decoding="async"></a>
 <figcaption><span class="n">11</span><span>report 与 metrics 的实际输出（metrics 为节选）</span></figcaption></figure>
@@ -536,7 +538,7 @@ bkagent asset-rpo</code></pre></div>
 <div class="code"><pre data-lang="text"><code>bkagent: plan risk is destructive for target "127.0.0.1:55416/bk_tut_restore"; re-run with --yes to proceed</code></pre></div>
 <p>计划本身声明了 <code>risk: destructive</code>，缺 <code>--yes</code> 直接拒绝。这一步不是提示语，是硬性检查：风险等级由 <code>DESTRUCTIVE_PLAN_COMMANDS</code> 决定，计划若低报风险会被判 <code>risk-understated</code> 并拒绝。</p>
 <h3 id="s8-2"><span class="hnum3">8.2</span>第 2 道：资产必须已登记</h3>
-<p>加上 <code>--yes</code> 后，<code>targetId</code> 变成 <code>127.0.0.1:55416/bk_tut_restore</code>——注意不是来源库 <code>bk_tut</code>：</p>
+<p>加上 <code>--yes</code> 后，<code>targetId</code> 变为 <code>127.0.0.1:55416/bk_tut_restore</code>；需注意该目标不是来源库 <code>bk_tut</code>：</p>
 <div class="code"><pre data-lang="text"><code>bkagent: no asset registered for target "127.0.0.1:55416/bk_tut_restore" in control database "/tmp/opencode/tutorial/run/control.db". Register it before destructive work:
   bkagent asset-set --db /tmp/opencode/tutorial/run/control.db --target 127.0.0.1:55416/bk_tut_restore --engine postgres --environment &lt;production|staging|development|test&gt; --owner &lt;owner&gt; --criticality &lt;critical|high|medium|low&gt; --data-classification &lt;public|internal|confidential|restricted&gt; --rpo-minutes &lt;n&gt; --rto-minutes &lt;n&gt; [--protected]</code></pre></div>
 <p>拒绝信息中包含修复命令，可直接复制执行。这里也是「环境」字段第一次产生实际后果的分岔点：登记为 <code>production</code> 会触发第 3 道门禁。</p>
@@ -549,11 +551,11 @@ bkagent asset-rpo</code></pre></div>
 digest: d6861131af1c512044d482270cf24a78e26016de757577832632eaf486600e2a
 approve: bkagent approve --db … --target 127.0.0.1:55416/bk_tut_restore --digest d686… --approver &lt;id&gt;
 inspect: bkagent approvals --db … --target 127.0.0.1:55416/bk_tut_restore --digest d686…</code></pre></div>
-<p>三次拒绝都以退出码 <code>2</code> 结束，脚本里可以据此判断「被门禁挡住」而不是「执行失败」。</p>
+<p>三次拒绝均以退出码 <code>2</code> 结束，脚本可据此区分「门禁拒绝」与「执行失败」。</p>
 <figure class="term"><a class="zoom" href="assets/tutorial/07-restore-gates.png" data-alt="三次拒绝的实际输出"><img src="assets/tutorial/07-restore-gates.png" alt="三次拒绝的实际输出" width="2400" height="1448" decoding="async"></a>
 <figcaption><span class="n">07</span><span>三次拒绝的实际输出</span></figcaption></figure>
 <p>审批绑定的是 <strong>digest</strong>，不是目标名：digest 由操作内容（计划指纹、配置摘要）算出，改了输入文件或参数就要重新审批。审批窗口 60 分钟。</p>
-<p>审批按<strong>操作系统身份</strong>去重，这是最容易被绕过的错觉：</p>
+<p>审批按<strong>操作系统身份</strong>去重，这是最常见的误解：</p>
 <figure class="term"><a class="zoom" href="assets/tutorial/08-approvals.png" data-alt="approve 与 approvals 的实际输出"><img src="assets/tutorial/08-approvals.png" alt="approve 与 approvals 的实际输出" width="2400" height="3732" decoding="async"></a>
 <figcaption><span class="n">08</span><span>approve 与 approvals 的实际输出</span></figcaption></figure>
 <div class="code"><pre data-lang="json"><code>{
@@ -611,9 +613,9 @@ bkagent dashboard --serve --port 8787             # 只绑定 127.0.0.1</code></
 <div class="code"><pre data-lang="sh"><code>bkagent watchdog</code></pre></div>
 <figure class="term"><a class="zoom" href="assets/tutorial/12-watchdog.png" data-alt="watchdog 的实际输出（节选）"><img src="assets/tutorial/12-watchdog.png" alt="watchdog 的实际输出（节选）" width="2400" height="1542" decoding="async"></a>
 <figcaption><span class="n">12</span><span>watchdog 的实际输出（节选）</span></figcaption></figure>
-<p>上述两条 P1 告警的成因是：<code>bk_tut_restore</code> 与 <code>bk_tut_copy</code> 被登记为<strong>需备份的资产</strong>，但没有 V2 产物，因此判定为 <code>no-vrp</code>。由此得到的约束是：恢复用的临时目标不应登记为长期资产，否则该目标会进入 RPO 统计范围。真实巡检里，<code>watchdog</code> 的输出适合直接接 <code>BKAGENT_WEBHOOK_URL</code> / SMTP，投递失败会留在 Outbox 里，用 <code>outbox-dispatch</code> 重投。</p>
+<p>上述两条 P1 告警的成因是：<code>bk_tut_restore</code> 与 <code>bk_tut_copy</code> 被登记为<strong>需备份的资产</strong>，但没有 V2 产物，因此判定为 <code>no-vrp</code>。由此得到的约束是：恢复用的临时目标不应登记为长期资产，否则该目标会进入 RPO 统计范围。常规巡检中，<code>watchdog</code> 的输出可接入 <code>BKAGENT_WEBHOOK_URL</code> / SMTP；投递失败会留在 Outbox 中，用 <code>outbox-dispatch</code> 重投。</p>
 <h2 id="s10"><span class="hnum">10</span><span class="htxt">进阶：三条继续往前的路</span></h2>
-<p>主线验证通过后，按目标从下列三条路径中选择一条继续，无需逐条阅读 36 条命令。</p>
+<p>主线验证通过后，按目标从下列三条路径中选择一条继续，无需逐条阅读完整命令清单。</p>
 <figure class="dg-fig"><svg class="dg" viewBox="0 0 960 372" role="img" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
 <defs><marker id="ar7" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0.5 1 L9 5 L0.5 9" fill="none" stroke="currentColor" stroke-width="1.3"/></marker></defs>
 <g class="dg-g"><rect class="dg-node accent" x="390" y="8" width="180" height="50" rx="9"/><text class="dg-t" x="480" y="37" text-anchor="middle">主线已验证</text></g><g class="dg-g"><rect class="dg-node accent" x="30" y="116" width="270" height="64" rx="9"/><text class="dg-t" x="165" y="142" text-anchor="middle">A. 目标在别的机器</text><text class="dg-sub" x="165" y="162" text-anchor="middle">或容器里</text></g><g class="dg-g"><rect class="dg-node accent" x="345" y="116" width="270" height="64" rx="9"/><text class="dg-t" x="480" y="142" text-anchor="middle">B. 需要增量 / PITR</text><text class="dg-sub" x="480" y="162" text-anchor="middle">或已有备份仓库</text></g><g class="dg-g"><rect class="dg-node accent" x="665" y="116" width="270" height="64" rx="9"/><text class="dg-t" x="800" y="152" text-anchor="middle">C. 由智能体执行操作</text></g><g class="dg-g"><rect class="dg-node" x="30" y="228" width="270" height="56" rx="9"/><text class="dg-cmd" x="165" y="260" text-anchor="middle">--transport ssh / kubectl</text></g><g class="dg-g"><rect class="dg-node" x="30" y="300" width="270" height="60" rx="9"/><text class="dg-t" x="165" y="324" text-anchor="middle">前置：目标机预置凭据</text><text class="dg-sub" x="165" y="344" text-anchor="middle">known_hosts</text></g><g class="dg-g"><rect class="dg-node" x="345" y="228" width="270" height="56" rx="9"/><text class="dg-cmd" x="480" y="260" text-anchor="middle">pgBackRest / WAL-G 编排</text></g><g class="dg-g"><rect class="dg-node" x="345" y="300" width="270" height="60" rx="9"/><text class="dg-t" x="480" y="324" text-anchor="middle">前置：工具在 PATH</text><text class="dg-sub" x="480" y="344" text-anchor="middle">仓库归 provider</text></g><g class="dg-g"><rect class="dg-node" x="665" y="228" width="270" height="56" rx="9"/><text class="dg-cmd" x="800" y="260" text-anchor="middle">dsh 插件 + pg-dba preset</text></g><g class="dg-g"><rect class="dg-node" x="665" y="300" width="270" height="60" rx="9"/><text class="dg-cmd" x="800" y="324" text-anchor="middle">bkagent-mcp</text><text class="dg-sub" x="800" y="344" text-anchor="middle">（MCP 服务）</text></g><path class="dg-line" d="M480 58 L480 86 L165 86 L165 114" marker-end="url(#ar7)"/><line class="dg-line" x1="480" y1="58" x2="480" y2="114" marker-end="url(#ar7)"/><path class="dg-line" d="M480 58 L480 86 L800 86 L800 114" marker-end="url(#ar7)"/><line class="dg-line" x1="165" y1="180" x2="165" y2="226" marker-end="url(#ar7)"/><line class="dg-line" x1="165" y1="284" x2="165" y2="298" marker-end="url(#ar7)"/><line class="dg-line" x1="480" y1="180" x2="480" y2="226" marker-end="url(#ar7)"/><line class="dg-line" x1="480" y1="284" x2="480" y2="298" marker-end="url(#ar7)"/><line class="dg-line" x1="800" y1="180" x2="800" y2="226" marker-end="url(#ar7)"/><line class="dg-line" x1="800" y1="284" x2="800" y2="298" marker-end="url(#ar7)"/></svg><button class="dg-zoom" type="button" aria-label="放大查看结构图"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.4 10.4 L14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button></figure>
@@ -641,17 +643,83 @@ dsh --profile web --no-open                                # 设置 → Agent �
 <p>安装过程中实际遇到的三个问题：</p>
 <div class="tw"><table>
 <thead><tr><th>现象</th><th>原因</th><th>处理</th></tr></thead>
-<tbody><tr><td>装完插件页有 <code>@backup-agent/dsh-plugin</code>，但预设列表里没有</td><td>包没有声明 <code>dsh.bundle</code>，<code>add</code> 只把它当普通依赖</td><td>在 <code>package.json</code> 加 <code>dsh.bundle.patch</code>，重新 <code>remove</code> 后 <code>add</code></td></tr>
+<tbody><tr><td>安装完成后插件页出现 <code>@backup-agent/dsh-plugin</code>，但预设列表中不存在该预设</td><td>包未声明 <code>dsh.bundle</code>，<code>add</code> 只将其作为普通依赖</td><td>在 <code>package.json</code> 增加 <code>dsh.bundle.patch</code>，先 <code>remove</code> 再 <code>add</code></td></tr>
 <tr><td>预设显示「加载失败」，提示 <code>$.prefix missing required value</code></td><td>0.2.x 的 persona 行要求 <code>prefix</code>，0.1.x 的 <code>text</code> 不再接受</td><td>改写为 <code>prefix</code>；<code>{{…}}</code> 变量必须是已注册的，否则同样报错</td></tr>
 <tr><td>手工把预设目录复制到 <code>~/.dsh/.agent-presets/</code> 无效</td><td>0.2.x 不再读取该目录</td><td>改为 bundle patch 的 <code>@deepseek-ai/dsh-agent-preset</code> 行</td></tr></tbody>
 </table></div>
 <p>不使用 dsh 时，可继续使用 MCP 入口：</p>
 <div class="code"><pre data-lang="sh"><code>BKAGENT_CLI=$PWD/dist/bkagent.mjs node packages/dsh-plugin/mcp.js</code></pre></div>
 <p>MCP 没有审批通道，<code>pg_restore</code> / <code>pg_pitr</code> 一律失败关闭，返回 <code>isError</code> 并提示改用 preset 或 CLI。</p>
+<h3 id="s10-2"><span class="hnum3">10.2</span>智能体闭环：Goal / Step / Action / Memory</h3>
+<p>v1.2 起，目标本身成为控制库里的持久对象。<code>Goal</code> 保存操作者的原话与约束，<code>Step</code> 保存拆解（序号、意图、依赖、状态、尝试次数、审批人），<code>Action</code> 是产品自身动词的受控组合，最终仍由既有 Plan IR 执行。模型负责拆解与选择修复动作；核心负责校验、执行与裁决。分层与不变量见 <a href="agent-loop.md">agent-loop.md</a>。</p>
+<figure class="dg-fig"><svg class="dg" viewBox="0 0 960 520" role="img" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
+<defs><marker id="ar8" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0.5 1 L9 5 L0.5 9" fill="none" stroke="currentColor" stroke-width="1.3"/></marker></defs>
+<g class="dg-g"><rect class="dg-node" x="330" y="10" width="300" height="52" rx="9"/><text class="dg-t" x="480" y="30" text-anchor="middle">goal add</text><text class="dg-sub" x="480" y="50" text-anchor="middle">目标 + 拆解 + 约束</text></g><g class="dg-g"><rect class="dg-node" x="330" y="82" width="300" height="52" rx="9"/><text class="dg-t" x="480" y="102" text-anchor="middle">goal next</text><text class="dg-sub" x="480" y="122" text-anchor="middle">取可运行步骤</text></g><g class="dg-g"><rect class="dg-node" x="330" y="154" width="300" height="52" rx="9"/><text class="dg-t" x="480" y="174" text-anchor="middle">goal run</text><text class="dg-sub" x="480" y="194" text-anchor="middle">拼 argv → 既有命令</text></g><g class="dg-g"><polygon class="dg-node accent" points="480,227 600,262 480,297 360,262"/><text class="dg-t" x="480" y="266" text-anchor="middle">步骤失败？</text></g><g class="dg-g"><rect class="dg-node" x="330" y="310" width="300" height="52" rx="9"/><text class="dg-t" x="480" y="330" text-anchor="middle">diagnose</text><text class="dg-sub" x="480" y="350" text-anchor="middle">封闭候选集</text></g><g class="dg-g"><rect class="dg-node" x="24" y="236" width="156" height="52" rx="9"/><text class="dg-t" x="102" y="266" text-anchor="middle">retry（确定性）</text></g><g class="dg-g"><rect class="dg-node" x="700" y="132" width="240" height="52" rx="9"/><text class="dg-t" x="820" y="152" text-anchor="middle">memory_entries</text><text class="dg-sub" x="820" y="172" text-anchor="middle">成功与失败签名</text></g><g class="dg-g"><rect class="dg-node" x="40" y="420" width="240" height="52" rx="9"/><text class="dg-t" x="160" y="450" text-anchor="middle">人工 goal approve-step</text></g><g class="dg-g"><rect class="dg-node" x="330" y="420" width="300" height="52" rx="9"/><text class="dg-t" x="480" y="450" text-anchor="middle">goal remediate --kind replan</text></g><g class="dg-g"><rect class="dg-node" x="700" y="420" width="180" height="52" rx="9"/><text class="dg-t" x="790" y="450" text-anchor="middle">停下并上报</text></g><line class="dg-line" x1="480" y1="62" x2="480" y2="80" marker-end="url(#ar8)"/><line class="dg-line" x1="480" y1="134" x2="480" y2="152" marker-end="url(#ar8)"/><line class="dg-line" x1="480" y1="206" x2="480" y2="225" marker-end="url(#ar8)"/><line class="dg-line" x1="480" y1="297" x2="480" y2="308" marker-end="url(#ar8)"/><text class="dg-lbl" x="496" y="303" text-anchor="start">其余</text><line class="dg-line" x1="360" y1="262" x2="182" y2="262" marker-end="url(#ar8)"/><text class="dg-lbl" x="271" y="251" text-anchor="middle">transient 且在预算内</text><path class="dg-line" d="M102 236 L102 178 L330 178" marker-end="url(#ar8)"/><line class="dg-line" x1="630" y1="158" x2="698" y2="158" marker-end="url(#ar8)"/><line class="dg-line" x1="480" y1="362" x2="480" y2="392"/><line class="dg-line" x1="160" y1="392" x2="790" y2="392"/><path class="dg-line" d="M160 392 L160 418" marker-end="url(#ar8)"/><path class="dg-line" d="M480 392 L480 418" marker-end="url(#ar8)"/><path class="dg-line" d="M790 392 L790 418" marker-end="url(#ar8)"/><text class="dg-lbl" x="160" y="384" text-anchor="middle">approval:required</text><text class="dg-lbl" x="494" y="384" text-anchor="start">replan</text><text class="dg-lbl" x="790" y="384" text-anchor="middle">escalate / abandon</text><path class="dg-line" d="M40 446 L10 446 L10 166 L330 166" marker-end="url(#ar8)"/><path class="dg-line" d="M480 472 L480 500 L900 500 L900 196 L630 196" marker-end="url(#ar8)"/></svg><button class="dg-zoom" type="button" aria-label="放大查看结构图"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.4 10.4 L14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button></figure>
+<p>四条不变量决定了「自主」的边界：</p>
+<div class="tw"><table>
+<thead><tr><th>不变量</th><th>含义</th></tr></thead>
+<tbody><tr><td>核心不发明步骤</td><td>拆解来自模型；核心只校验步数上限、序号唯一、依赖只能指向更早步骤、动作符合 capability grammar</td></tr>
+<tr><td>授权不随计划走</td><td>破坏性步骤需要该步骤上的人工 <code>approver</code>；<code>goal run</code> 仅在审批存在时追加 <code>--yes</code>，内层命令仍要过原有门禁，两把锁缺一不可</td></tr>
+<tr><td>审批失败不产生 <code>replan</code></td><td><code>approval:required</code> 的候选集只有 <code>escalate</code>，否则「自我修正」会变成绕过双人复核换一个破坏性动作</td></tr>
+<tr><td>凭据不进动作</td><td>capability grammar 直接拒绝携带口令的 <code>--dsn</code>：动作会持久化并重放，口令必须由 <code>BKAGENT_DSN</code> / <code>.pgpass</code> / peer / GSSAPI 提供</td></tr></tbody>
+</table></div>
+<p>一次完整闭环，用一个目标串起前面几章的命令（第 4 步为破坏性动作）：</p>
+<div class="code"><pre data-lang="sh"><code>bkagent goal add --db .bkagent/control.db --target 127.0.0.1:5432/&lt;db&gt; \
+  --intent '把 &lt;db&gt; 的最新逻辑备份恢复到 &lt;db&gt;_copy，并保留可核对的校验证据' \
+  --steps-json '[{"intent":"确认实例身份","action":{"command":"inspect","args":["--dsn","postgres://&lt;user&gt;@127.0.0.1:5432/&lt;db&gt;"]}},
+                 {"intent":"产出逻辑备份","dependsOn":[1],"action":{"command":"backup","args":["--dsn","postgres://&lt;user&gt;@127.0.0.1:5432/&lt;db&gt;","--database","&lt;db&gt;","--out","/var/backups/&lt;db&gt;.dump","--format","custom"]}},
+                 {"intent":"校验备份","dependsOn":[2],"action":{"command":"verify","args":["--dsn","postgres://&lt;user&gt;@127.0.0.1:5432/&lt;db&gt;","--input","/var/backups/&lt;db&gt;.dump","--database","&lt;db&gt;"]}},
+                 {"intent":"恢复到新库","dependsOn":[2],"action":{"command":"restore","args":["--dsn","postgres://&lt;user&gt;@127.0.0.1:5432/postgres","--input","/var/backups/&lt;db&gt;.dump","--database","&lt;db&gt;_copy","--create-database"]}}]' \
+  --constraints-json '{"maxSteps": 10, "allowDestructive": true}'</code></pre></div>
+<p><code>allowDestructive</code> 缺省为 <code>false</code>：含破坏性动作的拆解会被拒绝（<code>the goal does not allow destructive steps</code>），这是目标级开关，与逐步骤审批叠加。<code>goal add</code> 与 <code>goal plan</code> 都返回可运行顺序与相关记忆（<code>prior</code>），记忆因此参与规划，而非仅用于事后查询。</p>
+<figure class="dg-fig"><svg class="dg" viewBox="0 0 960 484" role="img" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
+<defs><marker id="ar9" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0.5 1 L9 5 L0.5 9" fill="none" stroke="currentColor" stroke-width="1.3"/></marker></defs>
+<line class="dg-line life" x1="128" y1="52" x2="128" y2="474"/><line class="dg-line life" x1="362" y1="52" x2="362" y2="474"/><line class="dg-line life" x1="596" y1="52" x2="596" y2="474"/><line class="dg-line life" x1="830" y1="52" x2="830" y2="474"/><rect class="dg-node pbox" x="24" y="10" width="208" height="42" rx="8"/><text class="dg-t" x="128" y="35" text-anchor="middle">模型 / 操作者</text><rect class="dg-node pbox" x="258" y="10" width="208" height="42" rx="8"/><text class="dg-t" x="362" y="35" text-anchor="middle">bkagent goal</text><rect class="dg-node pbox" x="492" y="10" width="208" height="42" rx="8"/><text class="dg-t" x="596" y="35" text-anchor="middle">确定性核心</text><rect class="dg-node pbox" x="726" y="10" width="208" height="42" rx="8"/><text class="dg-t" x="830" y="35" text-anchor="middle">目标 PostgreSQL</text><line class="dg-line" x1="130" y1="96" x2="360" y2="96" marker-end="url(#ar9)"/><text class="dg-step" x="136" y="87" text-anchor="start">1</text><text class="dg-lbl msg" x="156" y="87" text-anchor="start">goal add（拆解 + 约束）</text><line class="dg-line" x1="364" y1="140" x2="594" y2="140" marker-end="url(#ar9)"/><text class="dg-step" x="370" y="131" text-anchor="start">2</text><text class="dg-lbl msg" x="390" y="131" text-anchor="start">校验步数、依赖、动作 grammar</text><path class="dg-line" d="M 362 184 h 44 v 20 h -42" marker-end="url(#ar9)"/><text class="dg-step" x="368" y="177" text-anchor="start">3</text><text class="dg-lbl msg" x="414" y="199" text-anchor="start">goal run（取可运行步骤）</text><line class="dg-line" x1="364" y1="236" x2="828" y2="236" marker-end="url(#ar9)"/><text class="dg-step" x="370" y="227" text-anchor="start">4</text><text class="dg-lbl msg" x="390" y="227" text-anchor="start">inspect → backup → verify</text><line class="dg-line" x1="364" y1="280" x2="594" y2="280" marker-end="url(#ar9)"/><text class="dg-step" x="370" y="271" text-anchor="start">5</text><text class="dg-lbl msg" x="390" y="271" text-anchor="start">第 4 步 restore 需要审批</text><line class="dg-line dash" x1="594" y1="324" x2="130" y2="324" marker-end="url(#ar9)"/><text class="dg-step" x="588" y="315" text-anchor="end">6</text><text class="dg-lbl msg" x="568" y="315" text-anchor="end">diagnosis approval:required，candidates 仅 escalate</text><line class="dg-line" x1="130" y1="368" x2="360" y2="368" marker-end="url(#ar9)"/><text class="dg-step" x="136" y="359" text-anchor="start">7</text><text class="dg-lbl msg" x="156" y="359" text-anchor="start">goal approve-step --approver dba</text><line class="dg-line" x1="364" y1="412" x2="828" y2="412" marker-end="url(#ar9)"/><text class="dg-step" x="370" y="403" text-anchor="start">8</text><text class="dg-lbl msg" x="390" y="403" text-anchor="start">restore（追加 --yes，仍过原有门禁）</text><line class="dg-line" x1="364" y1="456" x2="594" y2="456" marker-end="url(#ar9)"/><text class="dg-step" x="370" y="447" text-anchor="start">9</text><text class="dg-lbl msg" x="390" y="447" text-anchor="start">目标 succeeded，写 step_attempts / memory_entries</text></svg><button class="dg-zoom" type="button" aria-label="放大查看结构图"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.4 10.4 L14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button></figure>
+<p>第一次 <code>goal run</code> 会停在第 4 步：</p>
+<figure class="term"><a class="zoom" href="assets/tutorial/14-goal-approval.png" data-alt="goal run 停在审批"><img src="assets/tutorial/14-goal-approval.png" alt="goal run 停在审批" width="2400" height="2980" decoding="async"></a>
+<figcaption><span class="n">14</span><span>goal run 停在审批</span></figcaption></figure>
+<p>下列输出为节选：前三步均为 <code>succeeded</code>，此处只保留第一条。</p>
+<div class="code"><pre data-lang="json"><code>{
+  "goalId": "gol_31752057-<span class="j-num">3818</span>-<span class="j-num">4</span>bd3-<span class="j-num">8</span>ec7-<span class="j-num">7</span>fa5179c9698",
+  "state": "running",
+  "executed": [{ "stepId": "stp_f2251146-…", "attempt": <span class="j-num">1</span>, "exitCode": <span class="j-num">0</span>, "state": "succeeded" }],
+  "diagnosis": {
+    "stepId": "stp_a603ed48-cfba-<span class="j-num">4958</span>-a94f-<span class="j-num">8</span>ce95a3a9453",
+    "errorClass": "manual",
+    "signature": "approval:required",
+    "candidates": [{ "kind": "escalate", "reason": "the decision belongs to a human; stop and report" }],
+    "requiresHuman": <span class="j-num">true</span>
+  },
+  "progress": { "total": <span class="j-num">4</span>, "succeeded": <span class="j-num">3</span>, "failed": <span class="j-num">0</span>, "ready": <span class="j-num">1</span> },
+  "next": { "kind": "run", "stepId": "stp_a603ed48-…" }
+}</code></pre></div>
+<p>审批由人在 CLI 完成，之后再次 <code>goal run</code> 只补执行剩余步骤：</p>
+<figure class="term"><a class="zoom" href="assets/tutorial/15-goal-approve-run.png" data-alt="审批通过后继续执行"><img src="assets/tutorial/15-goal-approve-run.png" alt="审批通过后继续执行" width="2400" height="1966" decoding="async"></a>
+<figcaption><span class="n">15</span><span>审批通过后继续执行</span></figcaption></figure>
+<div class="code"><pre data-lang="json"><code>{
+  "goalId": "gol_31752057-<span class="j-num">3818</span>-<span class="j-num">4</span>bd3-<span class="j-num">8</span>ec7-<span class="j-num">7</span>fa5179c9698",
+  "state": "succeeded",
+  "executed": [{ "stepId": "stp_a603ed48-…", "attempt": <span class="j-num">2</span>, "exitCode": <span class="j-num">0</span>, "state": "succeeded" }],
+  "progress": { "total": <span class="j-num">4</span>, "succeeded": <span class="j-num">4</span>, "failed": <span class="j-num">0</span>, "abandoned": <span class="j-num">0</span> },
+  "next": { "kind": "done", "failed": <span class="j-num">false</span> }
+}</code></pre></div>
+<p>账本与记忆均可查询：<code>goal show</code> 返回目标、步骤、每次尝试的退出码、错误类与失败签名；<code>memory search</code> 按签名检索历史结果（成功与失败均记录）：</p>
+<div class="code"><pre data-lang="sh"><code>bkagent goal show  --db .bkagent/control.db --goal &lt;goal-id&gt;
+bkagent memory search --db .bkagent/control.db --target 127.0.0.1:5432/&lt;db&gt; --limit 5</code></pre></div>
+<div class="tw"><table>
+<thead><tr><th>失败之后</th><th>由谁决定</th><th>机制</th></tr></thead>
+<tbody><tr><td><code>transient</code> 且在尝试预算内</td><td>核心</td><td>自动 <code>retry</code>，不需要模型参与</td></tr>
+<tr><td>需要换动作</td><td>模型</td><td><code>goal remediate --kind replan --action-json …</code>，原地替换该步骤动作，保留历史尝试与预算，不重连 DAG</td></tr>
+<tr><td>需要人</td><td>人</td><td><code>escalate</code> / <code>abandon</code>；<code>approval:required</code> 只允许 <code>escalate</code></td></tr>
+<tr><td>进程崩溃留下 <code>running</code> 步骤</td><td>核心</td><td><code>goal run</code> 启动时以签名 <code>stalled</code> 记一次失败尝试，不猜副作用是否已发生</td></tr></tbody>
+</table></div>
+<p>一次实际的 <code>replan</code>（本次执行）：第 2 步把库名写成不存在的 <code>bk_missing</code>，<code>goal run</code> 以 <code>errorClass: permanent</code>、<code>signature: schema:database-missing</code>（退出码 1）失败；诊断给出的候选为 <code>replan</code>（<code>requiresAction: true</code>）与 <code>escalate</code>。执行 <code>goal remediate --kind replan --action-json …</code> 后，该步骤回到 <code>ready</code>、目标回到 <code>planned</code>，再次 <code>goal run</code> 成功（<code>attempt: 2</code>）。这说明「自我修正」只替换动作，不改变门禁与历史；同时 <code>replan</code> 会清空该步骤已有的审批记录，替换后的破坏性动作须重新执行 <code>goal approve-step</code>。</p>
+<p>dsh 侧对应四个工具：<code>bk_goal</code>（open / plan / next / status / diagnose）、<code>bk_step_run</code>、<code>bk_remediate</code>、<code>bk_recall</code>。<strong>审批刻意不做成工具</strong>：MCP 与模型都无法自行放行破坏性步骤，只能在 CLI 执行 <code>bkagent goal approve-step</code>。</p>
+<p>未做且不应描述为已实现：多智能体协作、记忆的向量检索、自由 DAG 重写、目标级并发；真实模型驱动这条闭环的端到端验收（E-09）仍未纳入发布准入检查。</p>
 <h2 id="s11"><span class="hnum">11</span><span class="htxt">出问题时的查找顺序</span></h2>
 <figure class="dg-fig"><svg class="dg" viewBox="0 0 960 404" role="img" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid meet">
-<defs><marker id="ar8" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0.5 1 L9 5 L0.5 9" fill="none" stroke="currentColor" stroke-width="1.3"/></marker></defs>
-<g class="dg-g"><rect class="dg-node" x="24" y="40" width="130" height="50" rx="9"/><text class="dg-t" x="89" y="69" text-anchor="middle">命令失败</text></g><g class="dg-g"><polygon class="dg-node accent" points="480,24 580,65 480,106 380,65"/><text class="dg-t" x="480" y="69" text-anchor="middle">退出码</text></g><line class="dg-line" x1="154" y1="65" x2="378" y2="65" marker-end="url(#ar8)"/><line class="dg-line" x1="480" y1="106" x2="480" y2="150"/><line class="dg-line" x1="125" y1="150" x2="815" y2="150"/><g class="dg-g"><rect class="dg-node" x="20" y="180" width="210" height="74" rx="9"/><text class="dg-t" x="125" y="211" text-anchor="middle">读取拒绝信息首行</text><text class="dg-sub" x="125" y="231" text-anchor="middle">通常缺少 --yes 或参数错误</text></g><line class="dg-line" x1="125" y1="150" x2="125" y2="178" marker-end="url(#ar8)"/><text class="dg-lbl mono" x="125" y="141" text-anchor="middle">2 用法</text><g class="dg-g"><rect class="dg-node" x="250" y="180" width="210" height="74" rx="9"/><text class="dg-t" x="355" y="211" text-anchor="middle">psql 手动连接一次</text><text class="dg-sub" x="355" y="231" text-anchor="middle">host / port / 认证方式</text></g><line class="dg-line" x1="355" y1="150" x2="355" y2="178" marker-end="url(#ar8)"/><text class="dg-lbl mono" x="355" y="141" text-anchor="middle">3 连接</text><g class="dg-g"><rect class="dg-node" x="480" y="180" width="210" height="74" rx="9"/><text class="dg-t" x="585" y="211" text-anchor="middle">inspect 是否通过</text><text class="dg-sub" x="585" y="231" text-anchor="middle">providers 是否 READY</text></g><line class="dg-line" x1="585" y1="150" x2="585" y2="178" marker-end="url(#ar8)"/><text class="dg-lbl mono" x="585" y="141" text-anchor="middle">4 plan/probe</text><g class="dg-g"><rect class="dg-node" x="710" y="180" width="210" height="74" rx="9"/><text class="dg-t" x="815" y="211" text-anchor="middle">trace --plan 查看失败的步骤</text><text class="dg-sub" x="815" y="231" text-anchor="middle">catalog 查看是否入册</text></g><line class="dg-line" x1="815" y1="150" x2="815" y2="178" marker-end="url(#ar8)"/><text class="dg-lbl mono" x="815" y="141" text-anchor="middle">1 执行</text><g class="dg-g"><rect class="dg-node" x="360" y="330" width="240" height="52" rx="9"/><text class="dg-t" x="480" y="360" text-anchor="middle">按打印的下一步命令重试</text></g><line class="dg-line" x1="125" y1="300" x2="815" y2="300"/><line class="dg-line" x1="125" y1="254" x2="125" y2="300"/><line class="dg-line" x1="355" y1="254" x2="355" y2="300"/><line class="dg-line" x1="585" y1="254" x2="585" y2="300"/><line class="dg-line" x1="815" y1="254" x2="815" y2="300"/><line class="dg-line" x1="480" y1="300" x2="480" y2="328" marker-end="url(#ar8)"/></svg><button class="dg-zoom" type="button" aria-label="放大查看结构图"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.4 10.4 L14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button></figure>
+<defs><marker id="ar10" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0.5 1 L9 5 L0.5 9" fill="none" stroke="currentColor" stroke-width="1.3"/></marker></defs>
+<g class="dg-g"><rect class="dg-node" x="24" y="40" width="130" height="50" rx="9"/><text class="dg-t" x="89" y="69" text-anchor="middle">命令失败</text></g><g class="dg-g"><polygon class="dg-node accent" points="480,24 580,65 480,106 380,65"/><text class="dg-t" x="480" y="69" text-anchor="middle">退出码</text></g><line class="dg-line" x1="154" y1="65" x2="378" y2="65" marker-end="url(#ar10)"/><line class="dg-line" x1="480" y1="106" x2="480" y2="150"/><line class="dg-line" x1="125" y1="150" x2="815" y2="150"/><g class="dg-g"><rect class="dg-node" x="20" y="180" width="210" height="74" rx="9"/><text class="dg-t" x="125" y="211" text-anchor="middle">读取拒绝信息首行</text><text class="dg-sub" x="125" y="231" text-anchor="middle">通常缺少 --yes 或参数错误</text></g><line class="dg-line" x1="125" y1="150" x2="125" y2="178" marker-end="url(#ar10)"/><text class="dg-lbl mono" x="125" y="141" text-anchor="middle">2 用法</text><g class="dg-g"><rect class="dg-node" x="250" y="180" width="210" height="74" rx="9"/><text class="dg-t" x="355" y="211" text-anchor="middle">psql 手动连接一次</text><text class="dg-sub" x="355" y="231" text-anchor="middle">host / port / 认证方式</text></g><line class="dg-line" x1="355" y1="150" x2="355" y2="178" marker-end="url(#ar10)"/><text class="dg-lbl mono" x="355" y="141" text-anchor="middle">3 连接</text><g class="dg-g"><rect class="dg-node" x="480" y="180" width="210" height="74" rx="9"/><text class="dg-t" x="585" y="211" text-anchor="middle">inspect 是否通过</text><text class="dg-sub" x="585" y="231" text-anchor="middle">providers 是否 READY</text></g><line class="dg-line" x1="585" y1="150" x2="585" y2="178" marker-end="url(#ar10)"/><text class="dg-lbl mono" x="585" y="141" text-anchor="middle">4 plan/probe</text><g class="dg-g"><rect class="dg-node" x="710" y="180" width="210" height="74" rx="9"/><text class="dg-t" x="815" y="211" text-anchor="middle">trace --plan 查看失败的步骤</text><text class="dg-sub" x="815" y="231" text-anchor="middle">catalog 查看是否入册</text></g><line class="dg-line" x1="815" y1="150" x2="815" y2="178" marker-end="url(#ar10)"/><text class="dg-lbl mono" x="815" y="141" text-anchor="middle">1 执行</text><g class="dg-g"><rect class="dg-node" x="360" y="330" width="240" height="52" rx="9"/><text class="dg-t" x="480" y="360" text-anchor="middle">按打印的下一步命令重试</text></g><line class="dg-line" x1="125" y1="300" x2="815" y2="300"/><line class="dg-line" x1="125" y1="254" x2="125" y2="300"/><line class="dg-line" x1="355" y1="254" x2="355" y2="300"/><line class="dg-line" x1="585" y1="254" x2="585" y2="300"/><line class="dg-line" x1="815" y1="254" x2="815" y2="300"/><line class="dg-line" x1="480" y1="300" x2="480" y2="328" marker-end="url(#ar10)"/></svg><button class="dg-zoom" type="button" aria-label="放大查看结构图"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.4 10.4 L14 14" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></button></figure>
 <div class="tw"><table>
 <thead><tr><th>现象</th><th>原因</th><th>处理</th></tr></thead>
 <tbody><tr><td><code>no such table: …</code> 启动即报</td><td>控制库已存在，但迁移目录缺失（单文件安装常见）</td><td>设 <code>BKAGENT_MIGRATIONS</code> 指向包内 <code>dist/migrations</code>，或在旧控制库上重新执行迁移</td></tr>
@@ -671,7 +739,7 @@ export BKAGENT_DB=.bkagent/control.db      # 缺省值，可省略
 bkagent inspect --format text
 bkagent providers --format text
 
-<span class="c-comment"># 2. 建档（targetId 必须是 &lt;host&gt;:&lt;port&gt;/&lt;database&gt;）</span>
+<span class="c-comment"># 2. 登记资产（targetId 必须是 &lt;host&gt;:&lt;port&gt;/&lt;database&gt;）</span>
 bkagent asset-set --target 127.0.0.1:5432/&lt;db&gt; --engine postgres \
   --environment production --owner dba --criticality high \
   --data-classification internal --rpo-minutes 1440 --rto-minutes 240
@@ -699,12 +767,12 @@ bkagent dashboard --out /var/www/bkagent.html
 
 <span class="c-comment"># 7. 多步任务（可选）：目标闭环</span>
 bkagent goal add --target 127.0.0.1:5432/&lt;db&gt; \
-  --intent '备份并校验 &lt;db&gt; 库' \
+  --intent '备份并校验 app 库' \
   --steps-json '[{"intent":"探测","action":{"command":"inspect","args":[]}},
                  {"intent":"备份","action":{"command":"backup","args":["--database","&lt;db&gt;","--out","/var/backups/&lt;db&gt;.dump","--format","custom"]},"dependsOn":[1]},
                  {"intent":"校验","action":{"command":"verify","args":["--input","/var/backups/&lt;db&gt;.dump","--database","&lt;db&gt;"]},"dependsOn":[2]}]'
-bkagent goal run --goal &lt;goalId&gt;          <span class="c-comment"># 逐步执行；失败即停并返回诊断</span>
-bkagent goal diagnose --step &lt;stepId&gt;     <span class="c-comment"># 失败签名 + 允许的修复候选</span>
+bkagent goal run --goal &lt;goalId&gt;          # 逐步执行；失败即停并返回诊断
+bkagent goal diagnose --step &lt;stepId&gt;     # 失败签名 + 允许的修复候选
 bkagent goal remediate --step &lt;stepId&gt; --kind replan --action-json '{…}'
 bkagent memory search --target 127.0.0.1:5432/&lt;db&gt;</code></pre></div>
 <h2 id="s13"><span class="hnum">13</span><span class="htxt">这份教程验证到什么程度</span></h2>
@@ -712,8 +780,8 @@ bkagent memory search --target 127.0.0.1:5432/&lt;db&gt;</code></pre></div>
 <div class="tw"><table>
 <thead><tr><th>内容</th><th>状态</th></tr></thead>
 <tbody><tr><td><code>inspect</code>、<code>providers</code>、<code>asset-set</code>、<code>backup --mode logical</code>、<code>verify</code>、<code>catalog</code>、<code>asset-rpo</code>、<code>report</code>、<code>metrics</code>、<code>restore</code>（含三次门禁拒绝与一次通过）、<code>approve</code>、<code>approvals</code>、<code>watchdog</code>、<code>dashboard --out</code></td><td>在本地 PostgreSQL 16.15 上实际执行，输出为真实回显</td></tr>
-<tr><td><code>goal add</code> / <code>goal run</code> / <code>goal diagnose</code> / <code>goal remediate</code> / <code>memory search</code></td><td>在本地 PostgreSQL 16.15 上实际执行：两步目标成功、permanent 失败 → <code>replan</code> → 成功、未审批破坏性步骤在派发前被拒。<strong>未经模型驱动</strong>——闭环的工具轨迹没有 E2E 覆盖</td></tr>
 <tr><td>dsh 0.2.2-rc.4 安装、插件挂载与 <code>pg-dba</code> 预设</td><td>已执行：<code>--dump-config</code> 出现 <code>preset-pg-dba</code>，设置页显示「自定义 / PostgreSQL 备份恢复」且无加载失败；未用模型实际发起一次会话</td></tr>
+<tr><td>智能体闭环：<code>goal add</code> / <code>next</code> / <code>run</code> / <code>diagnose</code> / <code>remediate</code> / <code>approve-step</code> / <code>show</code>、<code>memory search</code></td><td>在本地 PostgreSQL 16.15 上实际执行：4 步目标先停在 <code>approval:required</code>（退出码 1），审批后 <code>succeeded</code>；另一次目标以 <code>permanent</code> / <code>schema:database-missing</code> 失败，<code>replan</code> 后 <code>succeeded</code>（<code>attempt: 2</code>）；<code>memory search</code> 返回对应签名条目。<strong>未经模型驱动</strong>，E-09 未纳入准入检查</td></tr>
 <tr><td>双人复核的<strong>通过态</strong></td><td>未演示：需要第二个操作系统用户执行 <code>approve</code>，本教程只展示 <code>distinct: 1</code> 的拒绝与自审被忽略</td></tr>
 <tr><td><code>--transport ssh</code> / <code>--transport kubectl</code>、物理备份、PITR、<code>pgbackrest-*</code>、<code>walg-*</code>、<code>retain</code>、MCP 入口</td><td>未执行，只给入口与前置条件</td></tr>
 <tr><td>V3 校验等级</td><td>未实现</td></tr></tbody>

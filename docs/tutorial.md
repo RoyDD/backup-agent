@@ -12,7 +12,7 @@ tags:
 
 本文以一个可复现的演示库为对象，按顺序执行 bkagent 的最小闭环：探测实例、登记资产、产出备份、校验恢复点、通过门禁恢复、查看台账与告警。每一步都给出实际执行的命令与真实输出，并说明这一步为什么必须存在。
 
-适合两类读者：首次接触本项目、需要在本机完成端到端验证的 DBA；以及评估该链路是否满足生产要求的评审者。命令参数、门禁细则与全部 36 条命令的参考手册见 [usage.md](usage.md)，设计原理见 [architecture.md](architecture.md)；本教程只覆盖主线与常见分支。
+适合两类读者：首次接触本项目、需要在本机完成端到端验证的 DBA；以及评估该链路是否满足生产要求的评审者。命令参数与门禁细则见 [usage.md](usage.md)（完整命令清单以 `bkagent --help` 为准），设计原理见 [architecture.md](architecture.md)；本教程只覆盖主线与常见分支。
 
 源码仓库：[RoyDD/backup-agent](https://github.com/RoyDD/backup-agent)。本教程的 Markdown 源文件为 [`docs/tutorial.md`](https://github.com/RoyDD/backup-agent/blob/main/docs/tutorial.md)，单页版为 [`docs/tutorial.html`](https://github.com/RoyDD/backup-agent/blob/main/docs/tutorial.html)；文中提到的命令、脚本与插件均可在该仓库对应路径下查阅。
 
@@ -42,7 +42,7 @@ pnpm build:cli                       # 产出 dist/bkagent.mjs 与 dist/migratio
 
 环境要求：Node.js ≥ 22.5（依赖 `node:sqlite`，运行时的 `ExperimentalWarning: SQLite` 属预期）、pnpm 11.24、目标 PostgreSQL 14–17 且 `psql` / `pg_dump` 可用。
 
-### 1.2 准备一个可以备份的库
+### 1.2 准备一个可备份的数据库
 
 本文假定目标实例已有业务库；若不存在，可执行下列脚本创建 `bk_tut`（三张表、一个索引、200 条客户记录、800 条订单记录）。
 
@@ -50,7 +50,7 @@ pnpm build:cli                       # 产出 dist/bkagent.mjs 与 dist/migratio
 createdb -h 127.0.0.1 -p 5432 -U postgres bk_tut
 ```
 
-（下面命令按 5432 举例；本文截图取自 55416 的本地演练实例，端口按自己的实例替换。）
+（下列命令以 5432 为例；本文截图取自 55416 的本地演练实例，端口按实际实例替换。）
 
 ```sql
 CREATE TABLE customers (
@@ -103,7 +103,7 @@ flowchart LR
   AS --- AP["Approval<br/>绑定操作 digest"]
 ```
 
-`inspect`、`providers` 不写控制库；`backup` 写 Plan/Attempt/Artifact；`verify` 把校验等级升级到 V2；`restore` 读 Asset 与 Approval 做门禁。退出码含义：`0` 成功、`1` 执行失败、`2` 用法错误或门禁拒绝、`3` 连接失败、`4` plan/probe 失败。
+`inspect`、`providers` 不写控制库；`backup` 写 Plan/Attempt/Artifact；`verify` 把校验等级升级到 V2；`restore` 读 Asset 与 Approval 做门禁。v1.2 另增 `goals`、`goal_steps`、`step_attempts`、`memory_entries` 四张表承载智能体闭环，见 10.2。退出码含义：`0` 成功、`1` 执行失败、`2` 用法错误或门禁拒绝、`3` 连接失败、`4` plan/probe 失败。
 
 ## 2. 第 1 步：`inspect` —— 先确认在对谁操作
 
@@ -123,11 +123,11 @@ bkagent inspect --format text
 | `in_recovery` | 备库为 `true`；在备库上做物理备份与 PITR 的前提不同 |
 | `wal_level` / `archive_mode` | 逻辑备份不需要；物理备份、PITR、WAL-G 链路分别要求 `replica`/`logical` 与开启归档 |
 | `execution_site` | `local` 表示在本机 spawn；远端执行时显示 `ssh:` / `kubectl:` 前缀 |
-| `databases` | 同实例上有哪些库，写 `--database` 时不要写错 |
+| `databases` | 同实例的数据库清单；填写 `--database` 时须与库名一致 |
 
-请全程统一写 `127.0.0.1`：接下来登记的资产 `targetId` 必须与计划算出的字符串完全一致，主机名写法不同会被当成两个目标。
+请全程统一写 `127.0.0.1`：接下来登记的资产 `targetId` 必须与计划算出的字符串完全一致，主机名写法不同会被识别为两个不同目标。
 
-## 3. 第 2 步：`asset-set` —— 给目标建档
+## 3. 第 2 步：`asset-set` —— 登记目标资产
 
 资产（Asset）是目标的业务属性：环境、负责人、关键级别、数据分级、RPO、RTO。它不是可选的备注，而是三件事的输入：恢复门禁判断是否属于生产、`watchdog` 判断告警等级、`asset-rpo` 判断恢复点是否过期。
 
@@ -154,9 +154,9 @@ flowchart LR
   G -->|"否"| NO["拒绝：no asset registered"]
 ```
 
-三个容易错的地方：
+三处常见错误：
 
-- 用 `localhost` 登记、用 `127.0.0.1` 备份，会被算成两个目标。
+- 用 `localhost` 登记、用 `127.0.0.1` 备份，会被识别为两个不同目标。
 - 恢复时 `--database` 是**目标库名**，与备份来源库名不同，`targetId` 也随之改变；换库名恢复要为新库单独登记。
 - 已存在的资产要「变宽松」（降低关键级别、去掉 `--protected`、改环境）时，必须再加 `--yes --principal <id>`，否则被拒。
 
@@ -179,7 +179,7 @@ walg: NOT READY — TOOL_MISSING(wal-g): required tool "wal-g" is not available 
 
 - 本机未安装 `pgbackrest` 与 `wal-g`，因此两条链路为 `NOT READY`，命令以退出码 `1` 结束。这是**能力协商（capability negotiation）失败关闭**：未声明的能力会明确报错，不会静默降级成 `pg_dump`。
 - `native-logical`、`native-physical` 为 `ok`，只说明 `pg_dump` / `pg_basebackup` 可用，不代表版本匹配已通过；真正的版本与参数校验在执行时按计划逐步进行。
-- 只关心逻辑备份时，这两行 `NOT READY` 可以忽略；但只要计划里出现 `pgbackrest-*` / `walg-*` 步骤，就必须先让对应工具出现在 `PATH` 上（或显式传 `--walg <bin>`）。
+- 只关心逻辑备份时，这两行 `NOT READY` 可忽略；但只要计划里出现 `pgbackrest-*` / `walg-*` 步骤，就必须先让对应工具出现在 `PATH` 上（或显式传 `--walg <bin>`）。
 
 ## 5. 第 4 步：`backup` —— 产出第一个恢复点
 
@@ -302,7 +302,7 @@ bkagent asset-rpo
 
 需要重点关注三个字段：`verifiedLevel`（V2 才有恢复价值）、`lifecycleState`（`live` / `tombstoned`，保留策略只打墓碑不删文件）、`checksum`（与远端存储副本比对时使用）。
 
-`asset-rpo` 换个角度回答「我现在有没有达标的恢复点」：`ageMinutes` 是最近一次 V2 的年龄，`withinRpo` 与资产登记的 `--rpo-minutes` 比较。巡检脚本通常直接读取这两个字段。
+`asset-rpo` 从另一个角度回答「当前是否存在满足 RPO 的恢复点」：`ageMinutes` 是最近一次 V2 的年龄，`withinRpo` 与资产登记的 `--rpo-minutes` 比较。巡检脚本通常直接读取这两个字段。
 
 `report` 输出面向人的汇总，`metrics` 输出 Prometheus 文本格式的时间序列：
 
@@ -349,7 +349,7 @@ bkagent: plan risk is destructive for target "127.0.0.1:55416/bk_tut_restore"; r
 
 ### 8.2 第 2 道：资产必须已登记
 
-加上 `--yes` 后，`targetId` 变成 `127.0.0.1:55416/bk_tut_restore`——注意不是来源库 `bk_tut`：
+加上 `--yes` 后，`targetId` 变为 `127.0.0.1:55416/bk_tut_restore`；需注意该目标不是来源库 `bk_tut`：
 
 ```text
 bkagent: no asset registered for target "127.0.0.1:55416/bk_tut_restore" in control database "/tmp/opencode/tutorial/run/control.db". Register it before destructive work:
@@ -375,13 +375,13 @@ approve: bkagent approve --db … --target 127.0.0.1:55416/bk_tut_restore --dige
 inspect: bkagent approvals --db … --target 127.0.0.1:55416/bk_tut_restore --digest d686…
 ```
 
-三次拒绝都以退出码 `2` 结束，脚本里可以据此判断「被门禁挡住」而不是「执行失败」。
+三次拒绝均以退出码 `2` 结束，脚本可据此区分「门禁拒绝」与「执行失败」。
 
 ![三次拒绝的实际输出](assets/tutorial/07-restore-gates.png)
 
 审批绑定的是 **digest**，不是目标名：digest 由操作内容（计划指纹、配置摘要）算出，改了输入文件或参数就要重新审批。审批窗口 60 分钟。
 
-审批按**操作系统身份**去重，这是最容易被绕过的错觉：
+审批按**操作系统身份**去重，这是最常见的误解：
 
 ![approve 与 approvals 的实际输出](assets/tutorial/08-approvals.png)
 
@@ -471,11 +471,11 @@ bkagent watchdog
 
 ![watchdog 的实际输出（节选）](assets/tutorial/12-watchdog.png)
 
-上述两条 P1 告警的成因是：`bk_tut_restore` 与 `bk_tut_copy` 被登记为**需备份的资产**，但没有 V2 产物，因此判定为 `no-vrp`。由此得到的约束是：恢复用的临时目标不应登记为长期资产，否则该目标会进入 RPO 统计范围。真实巡检里，`watchdog` 的输出适合直接接 `BKAGENT_WEBHOOK_URL` / SMTP，投递失败会留在 Outbox 里，用 `outbox-dispatch` 重投。
+上述两条 P1 告警的成因是：`bk_tut_restore` 与 `bk_tut_copy` 被登记为**需备份的资产**，但没有 V2 产物，因此判定为 `no-vrp`。由此得到的约束是：恢复用的临时目标不应登记为长期资产，否则该目标会进入 RPO 统计范围。常规巡检中，`watchdog` 的输出可接入 `BKAGENT_WEBHOOK_URL` / SMTP；投递失败会留在 Outbox 中，用 `outbox-dispatch` 重投。
 
 ## 10. 进阶：三条继续往前的路
 
-主线验证通过后，按目标从下列三条路径中选择一条继续，无需逐条阅读 36 条命令。
+主线验证通过后，按目标从下列三条路径中选择一条继续，无需逐条阅读完整命令清单。
 
 ```mermaid
 flowchart TD
@@ -536,7 +536,7 @@ dsh --profile web --no-open                                # 设置 → Agent �
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
-| 装完插件页有 `@backup-agent/dsh-plugin`，但预设列表里没有 | 包没有声明 `dsh.bundle`，`add` 只把它当普通依赖 | 在 `package.json` 加 `dsh.bundle.patch`，重新 `remove` 后 `add` |
+| 安装完成后插件页出现 `@backup-agent/dsh-plugin`，但预设列表中不存在该预设 | 包未声明 `dsh.bundle`，`add` 只将其作为普通依赖 | 在 `package.json` 增加 `dsh.bundle.patch`，先 `remove` 再 `add` |
 | 预设显示「加载失败」，提示 `$.prefix missing required value` | 0.2.x 的 persona 行要求 `prefix`，0.1.x 的 `text` 不再接受 | 改写为 `prefix`；`{{…}}` 变量必须是已注册的，否则同样报错 |
 | 手工把预设目录复制到 `~/.dsh/.agent-presets/` 无效 | 0.2.x 不再读取该目录 | 改为 bundle patch 的 `@deepseek-ai/dsh-agent-preset` 行 |
 
@@ -547,6 +547,125 @@ BKAGENT_CLI=$PWD/dist/bkagent.mjs node packages/dsh-plugin/mcp.js
 ```
 
 MCP 没有审批通道，`pg_restore` / `pg_pitr` 一律失败关闭，返回 `isError` 并提示改用 preset 或 CLI。
+
+### 10.2 智能体闭环：Goal / Step / Action / Memory
+
+v1.2 起，目标本身成为控制库里的持久对象。`Goal` 保存操作者的原话与约束，`Step` 保存拆解（序号、意图、依赖、状态、尝试次数、审批人），`Action` 是产品自身动词的受控组合，最终仍由既有 Plan IR 执行。模型负责拆解与选择修复动作；核心负责校验、执行与裁决。分层与不变量见 [agent-loop.md](agent-loop.md)。
+
+```mermaid
+flowchart TD
+  A["goal add<br/>目标 + 拆解 + 约束"] --> B["goal next<br/>取可运行步骤"]
+  B --> C["goal run<br/>拼 argv → 既有命令"]
+  C --> D{"步骤失败？"}
+  D -->|"transient 且在预算内"| R["retry（确定性）"]
+  R --> C
+  D -->|"其余"| G["diagnose<br/>封闭候选集"]
+  G -->|"approval:required"| H["人工 goal approve-step"]
+  H --> C
+  G -->|"replan"| P["goal remediate --kind replan"]
+  P --> C
+  G -->|"escalate / abandon"| S["停下并上报"]
+  C --> M["memory_entries<br/>成功与失败签名"]
+```
+
+四条不变量决定了「自主」的边界：
+
+| 不变量 | 含义 |
+|---|---|
+| 核心不发明步骤 | 拆解来自模型；核心只校验步数上限、序号唯一、依赖只能指向更早步骤、动作符合 capability grammar |
+| 授权不随计划走 | 破坏性步骤需要该步骤上的人工 `approver`；`goal run` 仅在审批存在时追加 `--yes`，内层命令仍要过原有门禁，两把锁缺一不可 |
+| 审批失败不产生 `replan` | `approval:required` 的候选集只有 `escalate`，否则「自我修正」会变成绕过双人复核换一个破坏性动作 |
+| 凭据不进动作 | capability grammar 直接拒绝携带口令的 `--dsn`：动作会持久化并重放，口令必须由 `BKAGENT_DSN` / `.pgpass` / peer / GSSAPI 提供 |
+
+一次完整闭环，用一个目标串起前面几章的命令（第 4 步为破坏性动作）：
+
+```sh
+bkagent goal add --db .bkagent/control.db --target 127.0.0.1:5432/<db> \
+  --intent '把 <db> 的最新逻辑备份恢复到 <db>_copy，并保留可核对的校验证据' \
+  --steps-json '[{"intent":"确认实例身份","action":{"command":"inspect","args":["--dsn","postgres://<user>@127.0.0.1:5432/<db>"]}},
+                 {"intent":"产出逻辑备份","dependsOn":[1],"action":{"command":"backup","args":["--dsn","postgres://<user>@127.0.0.1:5432/<db>","--database","<db>","--out","/var/backups/<db>.dump","--format","custom"]}},
+                 {"intent":"校验备份","dependsOn":[2],"action":{"command":"verify","args":["--dsn","postgres://<user>@127.0.0.1:5432/<db>","--input","/var/backups/<db>.dump","--database","<db>"]}},
+                 {"intent":"恢复到新库","dependsOn":[2],"action":{"command":"restore","args":["--dsn","postgres://<user>@127.0.0.1:5432/postgres","--input","/var/backups/<db>.dump","--database","<db>_copy","--create-database"]}}]' \
+  --constraints-json '{"maxSteps": 10, "allowDestructive": true}'
+```
+
+`allowDestructive` 缺省为 `false`：含破坏性动作的拆解会被拒绝（`the goal does not allow destructive steps`），这是目标级开关，与逐步骤审批叠加。`goal add` 与 `goal plan` 都返回可运行顺序与相关记忆（`prior`），记忆因此参与规划，而非仅用于事后查询。
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant M as 模型 / 操作者
+  participant CLI as bkagent goal
+  participant Core as 确定性核心
+  participant PG as 目标 PostgreSQL
+
+  M->>CLI: goal add（拆解 + 约束）
+  CLI->>Core: 校验步数、依赖、动作 grammar
+  CLI->>CLI: goal run（取可运行步骤）
+  CLI->>PG: inspect → backup → verify
+  CLI->>Core: 第 4 步 restore 需要审批
+  Core-->>M: diagnosis approval:required，candidates 仅 escalate
+  M->>CLI: goal approve-step --approver dba
+  CLI->>PG: restore（追加 --yes，仍过原有门禁）
+  CLI->>Core: 目标 succeeded，写 step_attempts / memory_entries
+```
+
+第一次 `goal run` 会停在第 4 步：
+
+![goal run 停在审批](assets/tutorial/14-goal-approval.png)
+
+下列输出为节选：前三步均为 `succeeded`，此处只保留第一条。
+
+```json
+{
+  "goalId": "gol_31752057-3818-4bd3-8ec7-7fa5179c9698",
+  "state": "running",
+  "executed": [{ "stepId": "stp_f2251146-…", "attempt": 1, "exitCode": 0, "state": "succeeded" }],
+  "diagnosis": {
+    "stepId": "stp_a603ed48-cfba-4958-a94f-8ce95a3a9453",
+    "errorClass": "manual",
+    "signature": "approval:required",
+    "candidates": [{ "kind": "escalate", "reason": "the decision belongs to a human; stop and report" }],
+    "requiresHuman": true
+  },
+  "progress": { "total": 4, "succeeded": 3, "failed": 0, "ready": 1 },
+  "next": { "kind": "run", "stepId": "stp_a603ed48-…" }
+}
+```
+
+审批由人在 CLI 完成，之后再次 `goal run` 只补执行剩余步骤：
+
+![审批通过后继续执行](assets/tutorial/15-goal-approve-run.png)
+
+```json
+{
+  "goalId": "gol_31752057-3818-4bd3-8ec7-7fa5179c9698",
+  "state": "succeeded",
+  "executed": [{ "stepId": "stp_a603ed48-…", "attempt": 2, "exitCode": 0, "state": "succeeded" }],
+  "progress": { "total": 4, "succeeded": 4, "failed": 0, "abandoned": 0 },
+  "next": { "kind": "done", "failed": false }
+}
+```
+
+账本与记忆均可查询：`goal show` 返回目标、步骤、每次尝试的退出码、错误类与失败签名；`memory search` 按签名检索历史结果（成功与失败均记录）：
+
+```sh
+bkagent goal show  --db .bkagent/control.db --goal <goal-id>
+bkagent memory search --db .bkagent/control.db --target 127.0.0.1:5432/<db> --limit 5
+```
+
+| 失败之后 | 由谁决定 | 机制 |
+|---|---|---|
+| `transient` 且在尝试预算内 | 核心 | 自动 `retry`，不需要模型参与 |
+| 需要换动作 | 模型 | `goal remediate --kind replan --action-json …`，原地替换该步骤动作，保留历史尝试与预算，不重连 DAG |
+| 需要人 | 人 | `escalate` / `abandon`；`approval:required` 只允许 `escalate` |
+| 进程崩溃留下 `running` 步骤 | 核心 | `goal run` 启动时以签名 `stalled` 记一次失败尝试，不猜副作用是否已发生 |
+
+一次实际的 `replan`（本次执行）：第 2 步把库名写成不存在的 `bk_missing`，`goal run` 以 `errorClass: permanent`、`signature: schema:database-missing`（退出码 1）失败；诊断给出的候选为 `replan`（`requiresAction: true`）与 `escalate`。执行 `goal remediate --kind replan --action-json …` 后，该步骤回到 `ready`、目标回到 `planned`，再次 `goal run` 成功（`attempt: 2`）。这说明「自我修正」只替换动作，不改变门禁与历史；同时 `replan` 会清空该步骤已有的审批记录，替换后的破坏性动作须重新执行 `goal approve-step`。
+
+dsh 侧对应四个工具：`bk_goal`（open / plan / next / status / diagnose）、`bk_step_run`、`bk_remediate`、`bk_recall`。**审批刻意不做成工具**：MCP 与模型都无法自行放行破坏性步骤，只能在 CLI 执行 `bkagent goal approve-step`。
+
+未做且不应描述为已实现：多智能体协作、记忆的向量检索、自由 DAG 重写、目标级并发；真实模型驱动这条闭环的端到端验收（E-09）仍未纳入发布准入检查。
 
 ## 11. 出问题时的查找顺序
 
@@ -585,7 +704,7 @@ export BKAGENT_DB=.bkagent/control.db      # 缺省值，可省略
 bkagent inspect --format text
 bkagent providers --format text
 
-# 2. 建档（targetId 必须是 <host>:<port>/<database>）
+# 2. 登记资产（targetId 必须是 <host>:<port>/<database>）
 bkagent asset-set --target 127.0.0.1:5432/<db> --engine postgres \
   --environment production --owner dba --criticality high \
   --data-classification internal --rpo-minutes 1440 --rto-minutes 240
@@ -630,8 +749,8 @@ bkagent memory search --target 127.0.0.1:5432/<db>
 | 内容 | 状态 |
 |---|---|
 | `inspect`、`providers`、`asset-set`、`backup --mode logical`、`verify`、`catalog`、`asset-rpo`、`report`、`metrics`、`restore`（含三次门禁拒绝与一次通过）、`approve`、`approvals`、`watchdog`、`dashboard --out` | 在本地 PostgreSQL 16.15 上实际执行，输出为真实回显 |
-| `goal add` / `goal run` / `goal diagnose` / `goal remediate` / `memory search` | 在本地 PostgreSQL 16.15 上实际执行：两步目标成功、permanent 失败 → `replan` → 成功、未审批破坏性步骤在派发前被拒。**未经模型驱动**——闭环的工具轨迹没有 E2E 覆盖 |
 | dsh 0.2.2-rc.4 安装、插件挂载与 `pg-dba` 预设 | 已执行：`--dump-config` 出现 `preset-pg-dba`，设置页显示「自定义 / PostgreSQL 备份恢复」且无加载失败；未用模型实际发起一次会话 |
+| 智能体闭环：`goal add` / `next` / `run` / `diagnose` / `remediate` / `approve-step` / `show`、`memory search` | 在本地 PostgreSQL 16.15 上实际执行：4 步目标先停在 `approval:required`（退出码 1），审批后 `succeeded`；另一次目标以 `permanent` / `schema:database-missing` 失败，`replan` 后 `succeeded`（`attempt: 2`）；`memory search` 返回对应签名条目。**未经模型驱动**，E-09 未纳入准入检查 |
 | 双人复核的**通过态** | 未演示：需要第二个操作系统用户执行 `approve`，本教程只展示 `distinct: 1` 的拒绝与自审被忽略 |
 | `--transport ssh` / `--transport kubectl`、物理备份、PITR、`pgbackrest-*`、`walg-*`、`retain`、MCP 入口 | 未执行，只给入口与前置条件 |
 | V3 校验等级 | 未实现 |
