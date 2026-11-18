@@ -169,7 +169,7 @@ pnpm -r --parallel typecheck
 pnpm build:cli                   # dist/bkagent.mjs + dist/migrations
 pnpm build:knowledge             # dist/bkagent-knowledge.mjs
 pnpm verify:skills               # presets/pg-dba/skills/MANIFEST.json hash check
-bash scripts/gate.sh             # the admission check CI runs: all of the above
+bash scripts/gate.sh             # the admission check: all of the above
 GATE_E2E=1 bash scripts/gate.sh  # adds the real-model E2E (needs dsh + a model key)
 ```
 
@@ -209,7 +209,7 @@ calls `dist/bkagent.mjs` by default, override with `BKAGENT_CLI`).
 | §11 engine/provider contract and the four providers | [`docs/provider-contract.md`](docs/provider-contract.md) |
 | dsh plugin, preset, MCP entry point | [`docs/dsh-integration.md`](docs/dsh-integration.md) |
 | Agent loop: Goal / Step / Action / Memory | [`docs/agent-loop.md`](docs/agent-loop.md) |
-| CI pipeline and what blocks a release | [`docs/ci.md`](docs/ci.md) |
+| Local admission check and what blocks a release | [`docs/admission.md`](docs/admission.md) |
 | Failure-mode catalog (62 entries) | [`docs/failure-catalog.md`](docs/failure-catalog.md) |
 | Read-only panel | [`docs/dashboard.md`](docs/dashboard.md) |
 | Evidence-retrieval baseline and evaluation | [`docs/knowledge-baseline.md`](docs/knowledge-baseline.md) |
@@ -221,9 +221,9 @@ calls `dist/bkagent.mjs` by default, override with `BKAGENT_CLI`).
 
 P0–P6 are implemented and locally verified. E-01–E-07 and E-10 have both
 implementation and test evidence; E-08 is partially met. E-09 (real-model E2E)
-covers the goal loop through `scripts/e2e-agent.mjs` and is wired into the
-`release-gate` job, which runs on tags and manual dispatch and fails when the
-model key is missing. The workflow has not yet run on GitHub.
+covers the goal loop through `scripts/e2e-agent.mjs` and is part of the release
+form of the local admission check (`GATE_E2E=1 scripts/gate.sh`), which reports
+BLOCKED — never green — when the model key is missing. This repository has no CI.
 
 Milestone details, acceptance evidence, the asset-inspection coverage matrix and
 the list of design items not yet implemented are in

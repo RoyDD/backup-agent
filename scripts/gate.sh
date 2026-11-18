@@ -1,9 +1,7 @@
 #!/usr/bin/env bash
 #
-# 质量准入检查入口。
-#
-# 与 `.github/workflows/quality-gate.yml` 使用同一份脚本：CI 调它，本地也调它，
-# 两边不会各自演化。检查规范见 `docs/quality/quality-gate.md`（workspace 根）。
+# 质量准入检查入口。本仓库不配置 CI，准入结论由本地脚本产生。
+# 检查规范见 `docs/quality/quality-gate.md`（workspace 根）。
 #
 # 判定语义：PASS / FAIL / SKIP / BLOCKED。SKIP 与 BLOCKED 不计为 PASS。
 # 退出码：0 全部 PASS；1 存在 FAIL；3 无 FAIL 但存在 BLOCKED；2 用法或环境错误。

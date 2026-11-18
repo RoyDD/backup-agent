@@ -6,7 +6,7 @@
 
 2026-11-18 起，脚本改用 `dsh headless --json`，不再起 web 服务、不再抓 token URL、不再解压 `session.jsonl.zstd`：
 
-1. 以用户 profile 为模板，在临时目录构造独立 `DSH_HOME`（`$DSH_HOME/profiles/headless` 的副本）；没有现成 profile 时（CI runner）改为让 dsh 在该目录生成出厂模板，不下载任何内容；
+1. 以用户 profile 为模板，在临时目录构造独立 `DSH_HOME`（`$DSH_HOME/profiles/headless` 的副本）；没有现成 profile 时（全新机器）改为让 dsh 在该目录生成出厂模板，不下载任何内容；
 2. 用 `--patch` 叠加一份只存在于临时目录的 overlay，以 `insert` 形式注册 `@backup-agent/dsh-plugin`；
 3. 预检：`--dump-config` 断言 overlay 已合成，并用 `createRequire(...).resolve()` 断言插件在**新位置**可解析；
 4. 执行 `dsh headless --json --approval-policy never "<task>"`，按 NDJSON 事件断言轨迹；
@@ -81,7 +81,7 @@ node scripts/e2e-agent.mjs
 同日另有两次运行，覆盖准入路径：
 
 - `GATE_E2E=1 scripts/gate.sh` 全量入口：`gol_296856f3-7bee-4fd9-92c9-aa21878a474e`，`hint=done`，产物 1058 字节，`gate.sh` 五项全 PASS、退出码 0。
-- 全新 `DSH_HOME`（无现成 profile，走 bootstrap 分支，等价于 CI runner）：`gol_04ed697b-4899-431f-bb5a-b003430aa9bd`，两步 `succeeded`，产物 1058 字节。
+- 全新 `DSH_HOME`（无现成 profile，走 bootstrap 分支，等价于一台干净的开发机）：`gol_04ed697b-4899-431f-bb5a-b003430aa9bd`，两步 `succeeded`，产物 1058 字节。
 
 ## 未覆盖
 
